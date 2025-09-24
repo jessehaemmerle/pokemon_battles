@@ -22,7 +22,7 @@ const io = new Server(server, { cors: { origin: '*' } });
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
-  // Random PvP-Demo (Server generiert beide Teams)
+  // Random PvP (Demo: Server generiert beide Teams)
   socket.on('join-random', async (data) => {
     try {
       const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);

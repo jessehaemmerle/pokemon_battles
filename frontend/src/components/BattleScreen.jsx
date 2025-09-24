@@ -37,9 +37,28 @@ function hpFillNode(current, total) {
 
 function StatusPill({ type }) {
   if (!type) return null;
-  const map = { burn: 'status-burn', paralysis: 'status-para', poison:'status-poison' };
-  const label = { burn: 'BRN', paralysis: 'PAR', poison: 'PSN' }[type] || type.toUpperCase();
-  return <span className={`status-pill ${map[type]}`}>{label}</span>;
+  const map = {
+    burn: 'status-burn', paralysis: 'status-para', poison:'status-poison',
+    sleep: 'status-sleep', freeze: 'status-freeze'
+  };
+  const titleMap = {
+    burn: 'Burn: 6.25% Schaden am Rundenende, physischer Angriff halbiert',
+    poison: 'Gift: 12.5% Schaden am Rundenende',
+    paralysis: 'Paralyse: 25% Ausfallchance',
+    sleep: 'Schlaf: 1–3 Züge handlungsunfähig',
+    freeze: 'Freeze: blockiert, 20% Auftauchance pro Zug'
+  };
+  const label = { burn:'BRN', paralysis:'PAR', poison:'PSN', sleep:'SLP', freeze:'FRZ' }[type] || type.toUpperCase();
+  return <span className={`status-pill ${map[type]}`} title={titleMap[type]}>{label}</span>;
+}
+
+function ItemPill({ item }) {
+  if (!item) return null;
+  const title = item === 'leftovers'
+    ? 'Leftovers: heilt 1/16 KP am Rundenende'
+    : 'Choice Scarf: Speed↑, auf den ersten Move gelockt bis zum Wechsel';
+  const label = item === 'leftovers' ? 'Leftovers' : 'Choice Scarf';
+  return <span className="item-pill" title={title}>{label}</span>;
 }
 
 export default function BattleScreen({ room, teams, onExit }) {
@@ -78,6 +97,7 @@ export default function BattleScreen({ room, teams, onExit }) {
         <div className="info-name">
           {mon.name}
           <StatusPill type={mon.status?.type} />
+          <ItemPill item={mon.item} />
         </div>
         <div className="info-lv">Lv{lv(mon)}</div>
       </div>
@@ -114,18 +134,25 @@ export default function BattleScreen({ room, teams, onExit }) {
       });
     };
 
-    const onMiss = ({ side, move }) => {
-      setLog(prev => [...prev, `😬 ${side} verfehlt mit ${move}.`]);
-    };
+    const onMiss = ({ side, move }) => setLog(prev => [...prev, `😬 ${side} verfehlt mit ${move}.`]);
 
     const onStatusApplied = ({ target, type }) => {
-      const tag = { burn: 'Burn', paralysis: 'Paralyse', poison: 'Gift' }[type] || type;
+      const tag = { burn: 'Burn', paralysis: 'Paralyse', poison: 'Gift', sleep:'Schlaf', freeze:'Freeze' }[type] || type;
       setLog(prev => [...prev, `✨ ${target} wurde mit ${tag} belegt!`]);
     };
 
     const onStatusTick = ({ side, type, damage }) => {
       const tag = { burn: 'Burn', poison: 'Gift' }[type] || type;
       setLog(prev => [...prev, `☠️ ${side} erleidet ${damage} Schaden durch ${tag}.`]);
+    };
+
+    const onStatusClear = ({ target, type, reason }) => {
+      const msg = type === 'freeze' && reason === 'thaw' ? 'ist aufgetaut!' : 'ist aufgewacht!';
+      setLog(prev => [...prev, `🧼 ${target} ${msg}`]);
+    };
+
+    const onItemHeal = ({ side, item, amount }) => {
+      if (item === 'leftovers') setLog(prev => [...prev, `🍽️ ${side} heilt ${amount} KP durch Leftovers.`]);
     };
 
     const onFainted = ({ fainted, target }) => {
@@ -164,6 +191,8 @@ export default function BattleScreen({ room, teams, onExit }) {
     socket.on('move-missed', onMiss);
     socket.on('status-applied', onStatusApplied);
     socket.on('status-tick', onStatusTick);
+    socket.on('status-clear', onStatusClear);
+    socket.on('item-heal', onItemHeal);
     socket.on('pokemon-fainted', onFainted);
     socket.on('switch-ok', onSwitchOk);
     socket.on('turn-end', onTurnEnd);
@@ -181,6 +210,8 @@ export default function BattleScreen({ room, teams, onExit }) {
       socket.off('move-missed', onMiss);
       socket.off('status-applied', onStatusApplied);
       socket.off('status-tick', onStatusTick);
+      socket.off('status-clear', onStatusClear);
+      socket.off('item-heal', onItemHeal);
       socket.off('pokemon-fainted', onFainted);
       socket.off('switch-ok', onSwitchOk);
       socket.off('turn-end', onTurnEnd);
@@ -199,8 +230,9 @@ export default function BattleScreen({ room, teams, onExit }) {
   const myTurn = state.turnOwner === 'player1';
   const canClick = myTurn && state.phase === 'select' && !state.over;
 
-  // --- Move Preview (Effektivität + Accuracy + Priority) ---
+  // --- Move Preview (Effektivität + Accuracy + Priority + Choice-Lock) ---
   const defTypes = state?.teams?.player2?.[state.active.player2]?.types ?? [];
+  const choiceLock = p1?.choiceLock || null;
   const moveHints = useMemo(() => {
     const hints = [];
     (p1.moves || []).forEach((m, i) => {
@@ -211,13 +243,16 @@ export default function BattleScreen({ room, teams, onExit }) {
       else if (eff <= 0.5) effTag = { cls: 'ne', label: 'Nicht sehr eff.' };
       const acc = m.accuracy ?? 100;
       const prio = m.priority ?? 0;
-      hints[i] = { effTag, acc, prio };
+      const locked = choiceLock && choiceLock !== m.name;
+      hints[i] = { effTag, acc, prio, locked };
     });
     return hints;
-  }, [defTypes, p1.moves]);
+  }, [defTypes, p1.moves, choiceLock]);
 
   const lockMove = (idx) => {
     if (!canClick) return;
+    const m = p1.moves[idx];
+    if (choiceLock && choiceLock !== m.name) return; // Hard block client-side
     socket.emit('lock-action', { room, side: 'player1', type: 'move', index: idx });
   };
   const canSwitchTo = (idx) => {
@@ -227,6 +262,7 @@ export default function BattleScreen({ room, teams, onExit }) {
   const lockSwitch = (idx) => {
     if (!canClick) return;
     socket.emit('lock-action', { room, side: 'player1', type: 'switch', index: idx });
+    // Choice-Lock entfernt sich serverseitig beim Switch; der Snapshot aktualisiert den Client
     setShowParty(false);
   };
 
@@ -237,7 +273,9 @@ export default function BattleScreen({ room, teams, onExit }) {
         <div className="badge" style={{ background: myTurn ? '#111827' : '#6b7280' }}>
           {myTurn ? '🎯 Dein Zug' : '⌛ Gegner ist dran'}
         </div>
-        <div className="small">{myTurn ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…') : 'Bitte warten…'}</div>
+        <div className="small">
+          {choiceLock ? `Choice-Lock: ${choiceLock}` : (myTurn ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…') : 'Bitte warten…')}
+        </div>
       </div>
 
       {/* Stage */}
@@ -263,12 +301,19 @@ export default function BattleScreen({ room, teams, onExit }) {
             {p1.moves.map((m, i) => {
               const hint = moveHints[i] || {};
               return (
-                <button key={i} className="btn" onClick={() => lockMove(i)} disabled={!canClick} title={m.name}>
+                <button
+                  key={i}
+                  className="btn"
+                  onClick={() => lockMove(i)}
+                  disabled={!canClick || !!hint.locked}
+                  title={m.name}
+                >
                   <div style={{ fontWeight: 800 }}>{m.name}</div>
                   <div className="move-meta">
                     <span className="tag acc">{(m.accuracy ?? 100)}%</span>
                     {hint.effTag && <span className={`tag ${hint.effTag.cls}`}>{hint.effTag.label}</span>}
                     {m.priority ? <span className="tag pri">{m.priority > 0 ? `Prio +${m.priority}` : `Prio ${m.priority}`}</span> : <span style={{opacity:0.3}} />}
+                    {hint.locked && <span className="tag lock">Lock</span>}
                   </div>
                 </button>
               );
@@ -308,7 +353,7 @@ export default function BattleScreen({ room, teams, onExit }) {
         </div>
       </div>
 
-      {/* End Screen Overlay bleibt wie gehabt – wird vom Backend-Event gesteuert */}
+      {/* End Screen Overlay (wie zuvor) */}
       {showEnd && (
         <div className="overlay" role="dialog" aria-modal="true">
           <div className="modal">

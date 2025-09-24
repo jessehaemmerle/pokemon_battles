@@ -3,21 +3,24 @@ import fetch from 'node-fetch';
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const rooms = new Map();
 
-/** State je Room:
+/** Room State:
  * {
- *   mode: 'pvp' | 'bot',
+ *   mode: 'pvp'|'bot',
  *   teams: { player1: Team, player2: Team },
  *   active: { player1: number, player2: number },
  *   over: boolean, winner: 'player1'|'player2'|null,
- *   phase: 'select' | 'acting',
+ *   phase: 'select'|'acting',
  *   turnOwner: 'player1'|'player2'
  * }
  *
- * Pokemon: {
+ * Pokémon:
+ * {
  *   id, name, sprite, types: string[],
  *   stats: { hp, attack, defense, spAttack, spDefense, speed },
  *   currentHp: number,
- *   status?: { type: 'burn'|'poison'|'paralysis', turns?: number },
+ *   status?: { type:'burn'|'poison'|'paralysis'|'sleep'|'freeze', turns?:number },
+ *   item?: 'leftovers'|'choice-scarf'|null,
+ *   choiceLock?: string|null, // Move-Name bei Choice-Lock
  *   moves: [{ name, power, type, category, accuracy, priority, ailment, ailmentChance }]
  * }
  */
@@ -90,7 +93,16 @@ function pickRandomIdFromGens(gens) {
   const [a,b]=ranges[0]; return Math.floor(Math.random()*(b-a+1))+a;
 }
 
-// ---- Move-Auswahl mit echten Werten (inkl. accuracy/priority/ailments) ----
+// -------- Items --------
+function randomItem() {
+  // 30% Leftovers, 15% Choice Scarf, sonst keins
+  const r = Math.random();
+  if (r < 0.30) return 'leftovers';
+  if (r < 0.45) return 'choice-scarf';
+  return null;
+}
+
+// ---- Move-Auswahl inkl. accuracy/priority/ailments ----
 async function pickRealMoves(pokemonData) {
   const take = async (list) => Promise.all(list.map(async (m) => {
     try {
@@ -102,8 +114,8 @@ async function pickRealMoves(pokemonData) {
         category: mv.damage_class?.name,
         accuracy: mv.accuracy ?? 100,
         priority: mv.priority ?? 0,
-        ailment: mv.meta?.ailment?.name ?? null,              // e.g. burn, paralysis, poison
-        ailmentChance: mv.meta?.ailment_chance ?? 0           // %
+        ailment: mv.meta?.ailment?.name ?? null,       // burn|paralysis|poison|sleep|freeze|...
+        ailmentChance: mv.meta?.ailment_chance ?? 0
       };
     } catch { return null; }
   }));
@@ -158,17 +170,19 @@ export async function generateTeam(gens=1, size=6) {
       },
       currentHp: stats['hp'] ?? 60,
       status: null,
+      item: randomItem(),
+      choiceLock: null,
       moves
     });
   }
   return team;
 }
 
-// ---- Kampfmathematik (mit Burn/Para-Einflüssen) ----
+// ---- Damage (inkl. Burn-Atk-Halbierung, Choice-Lock beeinflusst nicht den Schaden) ----
 function calcDamage(attacker, defender, move) {
   const level = 50;
   const isPhysical = move.category === 'physical';
-  const burnedAtkMod = (isPhysical && attacker.status?.type === 'burn') ? 0.5 : 1; // Burn halbiert phys. Angriff
+  const burnedAtkMod = (isPhysical && attacker.status?.type === 'burn') ? 0.5 : 1;
   const Araw = isPhysical ? attacker.stats.attack : attacker.stats.spAttack;
   const A = Math.max(1, Math.floor(Araw * burnedAtkMod));
   const D = isPhysical ? defender.stats.defense : defender.stats.spDefense;
@@ -200,48 +214,68 @@ function checkBattleEnd(state){
 }
 function toggleTurn(state){ state.turnOwner = state.turnOwner === 'player1' ? 'player2' : 'player1'; }
 
-// ---- Status-Helfer ----
+// ---- Status-Apply ----
 function tryApplyAilment(attacker, defender, move){
-  // Nur, wenn der Move laut meta einen Ailment hat
   const name = move.ailment;
   const chance = move.ailmentChance || 0;
   if (!name || !chance) return null;
+  if (defender.status?.type) return null; // 1 Status gleichzeitig
 
-  // Ziel hat schon Status? (vereinfachung: 1 Status gleichzeitig)
-  if (defender.status?.type) return null;
-
-  // Mögliche Ailments auf die 3 beschränken
-  const map = { burn: 'burn', paralysis: 'paralysis', poison: 'poison' };
+  // Nur diese 5
+  const map = { burn: 'burn', paralysis: 'paralysis', poison: 'poison', sleep: 'sleep', freeze: 'freeze' };
   const normalized = map[name];
   if (!normalized) return null;
 
   if (Math.random()*100 < chance){
-    defender.status = { type: normalized };
+    if (normalized === 'sleep') {
+      defender.status = { type: 'sleep', turns: 1 + Math.floor(Math.random()*3) }; // 1-3
+    } else {
+      defender.status = { type: normalized };
+    }
     return normalized;
   }
   return null;
 }
 
+// ---- End-of-Turn Effekte: Burn/Poison DoT, Leftovers Heal, Sleep-Turns runterzählen ----
 function endOfTurnTicks(state, side, io, room){
   const mon = state.teams[side][state.active[side]];
-  if (!mon || mon.currentHp <= 0 || !mon.status) return;
+  if (!mon || mon.currentHp <= 0) return;
 
   const maxHp = mon.stats.hp;
-  let delta = 0;
-  if (mon.status.type === 'burn') {
-    delta = Math.max(1, Math.floor(maxHp * 0.0625)); // 6.25%
-  } else if (mon.status.type === 'poison') {
-    delta = Math.max(1, Math.floor(maxHp * 0.125)); // 12.5%
-  } else {
-    return; // paralysis: kein DoT
+
+  // DoT
+  if (mon.status?.type === 'burn') {
+    const delta = Math.max(1, Math.floor(maxHp * 0.0625));
+    mon.currentHp = Math.max(0, mon.currentHp - delta);
+    io.to(room).emit('status-tick', { side, type: 'burn', damage: delta });
+    if (mon.currentHp === 0){
+      io.to(room).emit('pokemon-fainted', { fainted: mon.name, target: side });
+    }
+  } else if (mon.status?.type === 'poison') {
+    const delta = Math.max(1, Math.floor(maxHp * 0.125));
+    mon.currentHp = Math.max(0, mon.currentHp - delta);
+    io.to(room).emit('status-tick', { side, type: 'poison', damage: delta });
+    if (mon.currentHp === 0){
+      io.to(room).emit('pokemon-fainted', { fainted: mon.name, target: side });
+    }
   }
 
-  mon.currentHp = Math.max(0, mon.currentHp - delta);
-  io.to(room).emit('status-tick', { side, type: mon.status.type, damage: delta });
+  // Sleep: Zähler runter
+  if (mon.status?.type === 'sleep' && mon.status.turns > 0) {
+    mon.status.turns -= 1;
+    if (mon.status.turns === 0) {
+      const old = mon.status.type;
+      mon.status = null;
+      io.to(room).emit('status-clear', { target: side, type: old, reason: 'woke' });
+    }
+  }
 
-  // KO durch Status
-  if (mon.currentHp === 0){
-    io.to(room).emit('pokemon-fainted', { fainted: mon.name, target: side });
+  // Leftovers
+  if (mon.item === 'leftovers' && mon.currentHp > 0 && mon.currentHp < maxHp) {
+    const heal = Math.max(1, Math.floor(maxHp * (1/16)));
+    mon.currentHp = Math.min(maxHp, mon.currentHp + heal);
+    io.to(room).emit('item-heal', { side, item: 'leftovers', amount: heal });
   }
 }
 
@@ -298,7 +332,7 @@ export async function startBotBattle(io, socket, gens=1){
   io.to(room).emit('battle-start', { room, teams: state.teams, active: state.active, phase: state.phase, turnOwner: state.turnOwner });
 }
 
-// zentrale Ein-Zug-Engine (Accuracy, Para-Block, Ailments, EoT-Ticks)
+// zentrale Ein-Zug-Engine (Accuracy, Para/Sleep/Freeze, Ailments, EoT, Items, Choice-Lock)
 async function executeAction(io, room, side, action){
   const state = rooms.get(room);
   if (!state || state.over) return;
@@ -314,6 +348,9 @@ async function executeAction(io, room, side, action){
     const to = action.index;
     const team = state.teams[side];
     if (to>=0 && to<team.length && team[to].currentHp>0 && to!==state.active[side]){
+      // Choice-Lock entfernt sich beim Wechsel
+      team[state.active[side]].choiceLock = null;
+
       state.active[side] = to;
       io.to(room).emit('switch-ok', { side, toIndex: to });
       io.to(room).emit('message', `🔄 ${side} wechselt zu ${team[to].name}.`);
@@ -326,51 +363,87 @@ async function executeAction(io, room, side, action){
     if (attacker?.moves?.[moveIndex] && defender?.currentHp>0){
       const mv = attacker.moves[moveIndex];
 
-      // Paralysis: 25% Ausfall
+      // Choice Scarf: Move-Lock (Speed-Boost ist in deinem Ein-Zug-Modus ohne Reihenfolgen irrelevant)
+      if (attacker.item === 'choice-scarf') {
+        if (attacker.choiceLock && attacker.choiceLock !== mv.name) {
+          io.to(room).emit('error-message', `Choice Scarf: Du bist auf ${attacker.choiceLock} gelockt!`);
+          await sleep(300);
+        } else if (!attacker.choiceLock) {
+          attacker.choiceLock = mv.name;
+          io.to(room).emit('message', `🧣 ${attacker.name} ist jetzt auf ${mv.name} gelockt (Choice Scarf)!`);
+          await sleep(250);
+        }
+      }
+
+      // Status-Checks: Freeze 20% Auftauen, Sleep blockiert, Para 25% Fail
+      if (attacker.status?.type === 'freeze') {
+        if (Math.random() < 0.20) {
+          attacker.status = null;
+          io.to(room).emit('status-clear', { target: side, type: 'freeze', reason: 'thaw' });
+          await sleep(250);
+        } else {
+          io.to(room).emit('message', `❄️ ${attacker.name} ist eingefroren und kann sich nicht bewegen!`);
+          await sleep(450);
+          // Ende (kein Angriff)
+          // End-of-turn Ticks kommen nach unten für beide Seiten
+          gotoEndOfTurn();
+          return;
+        }
+      }
+      if (attacker.status?.type === 'sleep') {
+        if ((attacker.status.turns ?? 1) > 0) {
+          io.to(room).emit('message', `💤 ${attacker.name} schläft und kann nicht angreifen.`);
+          await sleep(450);
+          gotoEndOfTurn();
+          return;
+        }
+      }
       if (attacker.status?.type === 'paralysis' && Math.random() < 0.25) {
         io.to(room).emit('message', `⚡ ${attacker.name} ist paralysiert! Es kann sich nicht bewegen!`);
         await sleep(450);
+        gotoEndOfTurn();
+        return;
+      }
+
+      // Accuracy
+      const acc = mv.accuracy ?? 100;
+      if (Math.random()*100 > acc){
+        io.to(room).emit('message', `😬 ${attacker.name}'s ${mv.name} verfehlt!`);
+        io.to(room).emit('move-missed', { side, move: mv.name, target: opp });
+        await sleep(400);
       } else {
-        // Accuracy-Check
-        const acc = mv.accuracy ?? 100;
-        if (Math.random()*100 > acc){
-          io.to(room).emit('message', `😬 ${attacker.name}'s ${mv.name} verfehlt!`);
-          io.to(room).emit('move-missed', { side, move: mv.name, target: opp });
-          await sleep(400);
-        } else {
-          io.to(room).emit('message', `➡️ ${attacker.name} nutzt ${mv.name}!`);
+        io.to(room).emit('message', `➡️ ${attacker.name} nutzt ${mv.name}!`);
+        await sleep(300);
+
+        const result = calcDamage(attacker, defender, mv);
+        defender.currentHp = Math.max(0, defender.currentHp - result.dmg);
+
+        io.to(room).emit('move-made', {
+          side, move: mv.name, damage: result.dmg,
+          target: opp, effectiveness: result.eff, crit: result.crit, stab: result.stab
+        });
+
+        await sleep(450);
+
+        // Ailment-Apply (inkl. sleep/freeze)
+        const applied = tryApplyAilment(attacker, defender, mv);
+        if (applied){
+          io.to(room).emit('status-applied', { target: opp, type: applied });
           await sleep(300);
+        }
 
-          const result = calcDamage(attacker, defender, mv);
-          defender.currentHp = Math.max(0, defender.currentHp - result.dmg);
-
-          io.to(room).emit('move-made', {
-            side, move: mv.name, damage: result.dmg,
-            target: opp, effectiveness: result.eff, crit: result.crit, stab: result.stab
-          });
-
-          await sleep(450);
-
-          // Versuch, Ailment zuzufügen (nur burn/poison/paralysis werden berücksichtigt)
-          const applied = tryApplyAilment(attacker, defender, mv);
-          if (applied){
-            io.to(room).emit('status-applied', { target: opp, type: applied });
+        if (defender.currentHp === 0){
+          io.to(room).emit('pokemon-fainted', { fainted: defender.name, target: opp });
+          await sleep(300);
+          const switched = autoSwitchIfNeeded(state, opp);
+          if (switched !== null){
+            io.to(room).emit('switch-ok', { side: opp, toIndex: switched });
+            io.to(room).emit('message', `⚠️ ${opp} sendet ${state.teams[opp][switched].name} in den Kampf!`);
             await sleep(300);
-          }
-
-          if (defender.currentHp === 0){
-            io.to(room).emit('pokemon-fainted', { fainted: defender.name, target: opp });
-            await sleep(300);
-            const switched = autoSwitchIfNeeded(state, opp);
-            if (switched !== null){
-              io.to(room).emit('switch-ok', { side: opp, toIndex: switched });
-              io.to(room).emit('message', `⚠️ ${opp} sendet ${state.teams[opp][switched].name} in den Kampf!`);
-              await sleep(300);
-            } else {
-              if (checkBattleEnd(state)){
-                io.to(room).emit('battle-end', { winner: state.winner });
-                return;
-              }
+          } else {
+            if (checkBattleEnd(state)){
+              io.to(room).emit('battle-end', { winner: state.winner });
+              return;
             }
           }
         }
@@ -378,28 +451,30 @@ async function executeAction(io, room, side, action){
     }
   }
 
-  // End-of-Turn Status Ticks (beide Seiten)
-  endOfTurnTicks(state, 'player1', io, room);
-  endOfTurnTicks(state, 'player2', io, room);
+  // End-of-Turn beide Seiten
+  gotoEndOfTurn();
 
-  // KO nach Status?
-  if (checkBattleEnd(state)){
-    io.to(room).emit('battle-end', { winner: state.winner });
-    return;
-  }
+  function gotoEndOfTurn(){
+    endOfTurnTicks(state, 'player1', io, room);
+    endOfTurnTicks(state, 'player2', io, room);
 
-  // Rundenende
-  io.to(room).emit('turn-end', {});
-  state.phase = 'select';
-  toggleTurn(state);
-  io.to(room).emit('turn-state', { phase: state.phase, turnOwner: state.turnOwner });
-  io.to(room).emit('state-update', getRoomSnapshot(room));
+    if (checkBattleEnd(state)){
+      io.to(room).emit('battle-end', { winner: state.winner });
+      return;
+    }
 
-  // Bot am Zug?
-  if (state.mode === 'bot' && state.turnOwner === 'player2' && !state.over){
-    await sleep(450);
-    const botAction = decideBotAction(state);
-    await executeAction(io, room, 'player2', botAction);
+    io.to(room).emit('turn-end', {});
+    state.phase = 'select';
+    toggleTurn(state);
+    io.to(room).emit('turn-state', { phase: state.phase, turnOwner: state.turnOwner });
+    io.to(room).emit('state-update', getRoomSnapshot(room));
+
+    if (state.mode === 'bot' && state.turnOwner === 'player2' && !state.over){
+      setTimeout(async () => {
+        const botAction = decideBotAction(state);
+        await executeAction(io, room, 'player2', botAction);
+      }, 450);
+    }
   }
 }
 
@@ -409,7 +484,13 @@ function decideBotAction(state){
   const atk = state.teams[side][state.active[side]];
   const def = state.teams[opp][state.active[opp]];
 
-  // 20% defensive Switch wenn HP < 30%
+  // Wenn Choice-Lock, den gelockten Move nehmen, sonst…
+  if (atk.choiceLock) {
+    const idx = (atk.moves || []).findIndex(m => m.name === atk.choiceLock);
+    if (idx >= 0) return { type:'move', index: idx };
+  }
+
+  // 20% defensive Switch bei <30% HP
   if (atk.currentHp/atk.stats.hp < 0.3 && Math.random()<0.2){
     for (let i=0;i<state.teams[side].length;i++){
       if (i!==state.active[side] && state.teams[side][i].currentHp>0){
@@ -418,20 +499,13 @@ function decideBotAction(state){
     }
   }
 
-  // Besten Move nach (priority, power*effectiveness) wählen
-  let best = { idx: 0, score: -Infinity, prio: -99 };
+  // Besten Move nach (power*eff*acc) + Prio-Bonus wählen
+  let best = { idx: 0, score: -Infinity };
   atk.moves.forEach((m, idx) => {
     const eff = typeMultiplier(m.type, def.types);
-    const score = (m.power || 40) * eff + (m.priority ?? 0) * 5;
-    if (m.accuracy) { // Accuracy leicht einfließen lassen
-      const accFactor = m.accuracy / 100;
-      const adj = score * accFactor;
-      if (adj > best.score || (adj === best.score && (m.priority ?? 0) > best.prio)) {
-        best = { idx, score: adj, prio: m.priority ?? 0 };
-      }
-    } else {
-      if (score > best.score) best = { idx, score, prio: m.priority ?? 0 };
-    }
+    const acc = (m.accuracy ?? 100) / 100;
+    const score = ((m.power || 40) * eff * acc) + (m.priority ?? 0) * 5;
+    if (score > best.score) best = { idx, score };
   });
   return { type:'move', index: best.idx };
 }
@@ -459,6 +533,10 @@ export async function clientLockAction(io, socket, payload){
   } else if (type === 'move'){
     const atk = state.teams[side][state.active[side]];
     if (!atk?.moves?.[index]) return io.to(room).emit('error-message','Ungültiger Move.');
+    // Choice-Lock Prüfung (Server-seitig noch mal hart)
+    if (atk.item === 'choice-scarf' && atk.choiceLock && atk.choiceLock !== atk.moves[index].name){
+      return io.to(room).emit('error-message', `Choice Scarf: Du bist auf ${atk.choiceLock} gelockt!`);
+    }
     if (atk.currentHp<=0) return io.to(room).emit('error-message',`${atk.name} ist kampunfähig.`);
     await executeAction(io, room, side, { type:'move', index });
   } else {
