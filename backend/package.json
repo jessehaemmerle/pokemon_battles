@@ -10,6 +10,7 @@
     "cors": "^2.8.5"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "render-build": "echo 'Nothing to build for backend'"
   }
 }
