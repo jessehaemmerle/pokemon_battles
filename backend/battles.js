@@ -6,13 +6,13 @@ const rooms = new Map();
 /** State je Room:
  * {
  *   mode: 'pvp' | 'bot',
- *   players: string[],           // Demo: 1 Spieler + servergesteuerter Gegner
+ *   players: string[],
  *   teams: { player1: Team, player2: Team },
  *   active: { player1: number, player2: number },
  *   over: boolean,
  *   winner: 'player1' | 'player2' | null,
  *   phase: 'select' | 'acting',
- *   turnOwner: 'player1' | 'player2',   // NEU: wer ist am Zug?
+ *   turnOwner: 'player1' | 'player2',
  * }
  */
 
@@ -108,7 +108,7 @@ async function pickRealMoves(pokemonData) {
   return selected.slice(0,4);
 }
 
-export async function generateTeam(gens=1, size=3) {
+export async function generateTeam(gens=1, size=6) { // <- STANDARDGRÖSSE: 6
   const team = []; const chosen = new Set();
   while (team.length < size) {
     const id = pickRandomIdFromGens(gens);
@@ -168,9 +168,7 @@ function checkBattleEnd(state){
   return false;
 }
 
-function toggleTurn(state){
-  state.turnOwner = state.turnOwner === 'player1' ? 'player2' : 'player1';
-}
+function toggleTurn(state){ state.turnOwner = state.turnOwner === 'player1' ? 'player2' : 'player1'; }
 
 export function getRoomSnapshot(room){
   const s = rooms.get(room);
@@ -188,8 +186,8 @@ export function getRoomSnapshot(room){
 
 export async function startPvpQuickMatch(io, socket, gens=1){
   const room = `pvp-${socket.id}-${Math.random().toString(36).slice(2,8)}`;
-  const p1 = await generateTeam(gens, 3);
-  const p2 = await generateTeam(gens, 3);
+  const p1 = await generateTeam(gens, 6); // <- 6er-Team
+  const p2 = await generateTeam(gens, 6);
 
   const state = {
     mode: 'pvp',
@@ -199,7 +197,7 @@ export async function startPvpQuickMatch(io, socket, gens=1){
     over: false,
     winner: null,
     phase: 'select',
-    turnOwner: 'player1' // Spieler beginnt
+    turnOwner: 'player1'
   };
   rooms.set(room, state);
 
@@ -209,8 +207,8 @@ export async function startPvpQuickMatch(io, socket, gens=1){
 
 export async function startBotBattle(io, socket, gens=1){
   const room = `bot-${socket.id}`;
-  const p1 = await generateTeam(gens, 3);
-  const p2 = await generateTeam(gens, 3);
+  const p1 = await generateTeam(gens, 6); // <- 6er-Team
+  const p2 = await generateTeam(gens, 6);
 
   const state = {
     mode: 'bot',
@@ -220,22 +218,22 @@ export async function startBotBattle(io, socket, gens=1){
     over: false,
     winner: null,
     phase: 'select',
-    turnOwner: 'player1' // Spieler beginnt
+    turnOwner: 'player1'
   };
   rooms.set(room, state);
 
   socket.join(room);
   io.to(room).emit('battle-start', { room, teams: state.teams, active: state.active, phase: state.phase, turnOwner: state.turnOwner });
+
+  // Optional: Wenn Bot starten soll, könntest du hier prüfen, ob turnOwner 'player2' ist.
 }
 
-// zentrale Einzugs-Engine
+// zentrale Einzugs-Engine (unverändert)
 async function executeAction(io, room, side, action){
   const state = rooms.get(room);
   if (!state || state.over) return;
 
   const opp = side === 'player1' ? 'player2' : 'player1';
-
-  // Falls aktives Mon des Ausführenden bereits KO → keine Aktion
   const atkMon = state.teams[side][state.active[side]];
   if (atkMon.currentHp <= 0) return;
 
@@ -288,17 +286,12 @@ async function executeAction(io, room, side, action){
     }
   }
 
-  // Runde endet NACH EINER Aktion
   io.to(room).emit('turn-end', {});
-
-  // nächste Runde vorbereiten
   state.phase = 'select';
   toggleTurn(state);
-
   io.to(room).emit('turn-state', { phase: state.phase, turnOwner: state.turnOwner });
   io.to(room).emit('state-update', getRoomSnapshot(room));
 
-  // Bot ist dran? -> auto handeln
   if (state.mode === 'bot' && state.turnOwner === 'player2' && !state.over){
     await sleep(450);
     const botAction = decideBotAction(state);
@@ -311,8 +304,6 @@ function decideBotAction(state){
   const opp = 'player1';
   const atk = state.teams[side][state.active[side]];
   const def = state.teams[opp][state.active[opp]];
-
-  // 20% defensive Switch wenn HP < 30% und es eine Alternative gibt
   if (atk.currentHp/atk.stats.hp < 0.3 && Math.random()<0.2){
     for (let i=0;i<state.teams[side].length;i++){
       if (i!==state.active[side] && state.teams[side][i].currentHp>0){
@@ -320,8 +311,6 @@ function decideBotAction(state){
       }
     }
   }
-
-  // sonst besten Move nach power*effectiveness
   let bestIdx = 0; let bestScore = -Infinity;
   atk.moves.forEach((m, idx) => {
     const score = (m.power || 40) * typeMultiplier(m.type, def.types);
@@ -335,27 +324,18 @@ export function clientRequestSnapshot(io, socket, room){
   if (snap) socket.emit('state-update', snap);
 }
 
-/** payload: { room, side?: 'player1'|'player2', type: 'move'|'switch', index: number }
- *  - es darf NUR der turnOwner eine Aktion locken
- */
 export async function clientLockAction(io, socket, payload){
   const { room, side='player1', type, index } = payload || {};
   const state = rooms.get(room);
   if (!state || state.over) return;
 
-  if (state.phase !== 'select'){
-    io.to(room).emit('error-message', 'Aktionen nur in der Auswahlphase erlaubt.');
-    return;
-  }
-  if (state.turnOwner !== side){
-    io.to(room).emit('error-message', 'Nicht dein Zug!');
-    return;
-  }
+  if (state.phase !== 'select'){ io.to(room).emit('error-message', 'Aktionen nur in der Auswahlphase erlaubt.'); return; }
+  if (state.turnOwner !== side){ io.to(room).emit('error-message', 'Nicht dein Zug!'); return; }
 
   if (type === 'switch'){
     const t = state.teams[side];
     if (index<0 || index>=t.length) return io.to(room).emit('error-message','Ungültiger Wechselindex.');
-    if (t[index].currentHp<=0) return io.to(room).emit('error-message','Dieses Pokémon ist kampfunfähig.');
+    if (t[index].currentHp<=0) return io.to(room).emit('error-message','Dieses Pokémon ist kampunfähig.');
     if (state.active[side]===index) return io.to(room).emit('error-message','Dieses Pokémon ist bereits aktiv.');
     await executeAction(io, room, side, { type:'switch', index });
   } else if (type === 'move'){
