@@ -3,9 +3,7 @@ import { socket } from '../lib/socket';
 
 function hpFillNode(current, total) {
   const pct = Math.max(0, Math.round((current / total) * 100));
-  let cls = ''; // default green
-  if (pct < 50) cls = ' mid';
-  if (pct < 25) cls = ' low';
+  let cls = ''; if (pct < 50) cls = ' mid'; if (pct < 25) cls = ' low';
   return (
     <div className="hpbar" title={`${current}/${total}`}>
       <div className={`fill${cls}`} style={{ width: `${pct}%` }} />
@@ -20,8 +18,13 @@ export default function BattleScreen({ room, teams, onExit }) {
     over: false, winner: null,
     phase: 'select', locks: {}
   });
-  const [hitP1, setHitP1] = useState(false);
-  const [hitP2, setHitP2] = useState(false);
+
+  // Animation flags
+  const [atkP1, setAtkP1] = useState(false);
+  const [atkP2, setAtkP2] = useState(false);
+  const [defP1, setDefP1] = useState(false);
+  const [defP2, setDefP2] = useState(false);
+
   const [lastLine, setLastLine] = useState('Ein Kampf beginnt!');
   const [log, setLog] = useState([]);
   const [showParty, setShowParty] = useState(false);
@@ -30,29 +33,53 @@ export default function BattleScreen({ room, teams, onExit }) {
   const p1 = state?.teams?.player1?.[state.active.player1];
   const p2 = state?.teams?.player2?.[state.active.player2];
 
+  // Helpers
+  const lv = (mon) => Math.max(1, Math.round(mon.stats.speed / 10));
+  const hpBox = (mon) => (
+    <>
+      <div className="info-row">
+        <div className="info-name">{mon.name}</div>
+        <div className="info-lv">Lv{lv(mon)}</div>
+      </div>
+      <div className="info-row">
+        {hpFillNode(mon.currentHp, mon.stats.hp)}
+        <div className="small">{mon.currentHp}/{mon.stats.hp}</div>
+      </div>
+    </>
+  );
+
   useEffect(() => {
     const onBattleStart = (p) => setState(s => ({ ...s, ...p }));
     const onState = (snap) => setState(s => ({ ...s, ...snap }));
     const onTurnState = (p) => setState(s => ({ ...s, ...p }));
+
     const onMessage = (m) => { setLastLine(m); setLog(prev => [...prev, m]); };
+
     const onMove = (d) => {
-      if (d.target === 'player1') { setHitP1(true); setTimeout(()=>setHitP1(false), 160); }
-      else { setHitP2(true); setTimeout(()=>setHitP2(false), 160); }
+      // attack & defend animation toggles
+      if (d.side === 'player1') {
+        setAtkP1(true); setTimeout(()=>setAtkP1(false), 460);
+        setDefP2(true); setTimeout(()=>setDefP2(false), 460);
+      } else {
+        setAtkP2(true); setTimeout(()=>setAtkP2(false), 460);
+        setDefP1(true); setTimeout(()=>setDefP1(false), 460);
+      }
+
       let effTxt = '';
       if (d.effectiveness === 0) effTxt = ' (keine Wirkung)';
       else if (d.effectiveness >= 2) effTxt = ' (sehr effektiv!)';
       else if (d.effectiveness <= 0.5) effTxt = ' (nicht sehr effektiv)';
       const critTxt = d.crit ? ' ✨Krit!' : '';
       const line = `➡️ ${d.side} nutzt ${d.move} auf ${d.target}: ${d.damage} Schaden${effTxt}${critTxt}`;
-      setLastLine(line);
-      setLog(prev => [...prev, line]);
+      setLastLine(line); setLog(prev => [...prev, line]);
     };
+
     const onFainted = ({ fainted, target }) => {
       const line = `💀 ${fainted} (${target}) wurde besiegt!`;
       setLastLine(line); setLog(prev => [...prev, line]);
     };
     const onSwitchOk = ({ side, toIndex }) => {
-      const mon = state?.teams?.[side]?.[toIndex]?.name || `Slot ${toIndex+1}`;
+      const mon = (state?.teams?.[side] ?? [])[toIndex]?.name || `Slot ${toIndex+1}`;
       const line = `🔄 ${side} wechselt zu ${mon}.`;
       setLastLine(line); setLog(prev => [...prev, line]);
     };
@@ -97,28 +124,13 @@ export default function BattleScreen({ room, teams, onExit }) {
 
   if (!state.teams || !p1 || !p2) return <div className="container">Warte auf Teams…</div>;
 
-  const hpBox = (mon) => {
-    const lv = Math.max(1, Math.round(mon.stats.speed / 10)); // kleine Illusion eines LV
-    const bar = hpFillNode(mon.currentHp, mon.stats.hp);
-    return (
-      <>
-        <div className="info-row">
-          <div className="info-name">{mon.name}</div>
-          <div className="info-lv">Lv{lv}</div>
-        </div>
-        <div className="info-row">
-          {bar}
-          <div className="small">{mon.currentHp}/{mon.stats.hp}</div>
-        </div>
-      </>
-    );
-  };
+  const waitingOnOpponent = state.phase === 'select' && !!state.locks?.player1 && !state.locks?.player2;
 
+  // Actions
   const lockMove = (idx) => {
     if (state.phase !== 'select' || state.over) return;
     socket.emit('lock-action', { room, side: 'player1', type: 'move', index: idx });
   };
-
   const canSwitchTo = (idx) => {
     const mon = state.teams.player1[idx];
     return mon.currentHp > 0 && idx !== state.active.player1;
@@ -129,37 +141,42 @@ export default function BattleScreen({ room, teams, onExit }) {
     setShowParty(false);
   };
 
-  const waitingOnOpponent =
-    state.phase === 'select' && !!state.locks?.player1 && !state.locks?.player2;
-
   return (
     <div className="container">
+      {/* Turn badges */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 8 }}>
+        <div className="badge" style={{ background: state.phase==='select' ? '#111827' : '#6b7280' }}>
+          {state.phase === 'select' ? '🎯 Auswahlphase' : '⚡ Auflösungsphase'}
+        </div>
+        <div className="helper">
+          {waitingOnOpponent ? '⏳ Dein Zug ist gelockt – warte auf Gegner…' : (state.locks?.player1 ? 'Dein Zug ist gelockt' : 'Wähle eine Aktion')}
+        </div>
+      </div>
+
+      {/* Stage */}
       <div className="battle-stage">
         <div className="stage-layer stage-sky" />
         <div className="stage-layer stage-ground" />
-
-        {/* Platforms */}
         <div className="platform enemy" />
         <div className="platform player" />
 
-        {/* Enemy Info (top-right) */}
-        <div className="info-box info-top">
-          {hpBox(p2)}
-        </div>
+        <div className="info-box info-top">{hpBox(p2)}</div>
+        <div className="info-box info-bottom">{hpBox(p1)}</div>
 
-        {/* Player Info (bottom-left) */}
-        <div className="info-box info-bottom">
-          {hpBox(p1)}
-        </div>
-
-        {/* Sprites */}
-        <img className={`sprite enemy ${hitP2 ? 'hit' : ''}`} src={p2.sprite} alt={p2.name} />
-        <img className={`sprite player ${hitP1 ? 'hit' : ''}`} src={p1.sprite} alt={p1.name} />
+        {/* Sprites mit Angriffs-/Treffer-Animationen */}
+        <img
+          className={`sprite enemy ${atkP2 ? 'attack-left' : ''} ${defP2 ? 'defend-shake' : ''}`}
+          src={p2.sprite} alt={p2.name}
+        />
+        <img
+          className={`sprite player ${atkP1 ? 'attack-right' : ''} ${defP1 ? 'defend-shake' : ''}`}
+          src={p1.sprite} alt={p1.name}
+        />
       </div>
 
-      {/* UI: Command Menu + Dialog */}
+      {/* UI */}
       <div className="ui-area">
-        {/* Command menu (moves + switch toggle) */}
+        {/* Commands */}
         <div className="command">
           <div className="grid grid-2" style={{ marginBottom: 10 }}>
             {p1.moves.map((m, i) => (
@@ -174,15 +191,11 @@ export default function BattleScreen({ room, teams, onExit }) {
               </button>
             ))}
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              className="btn secondary"
-              onClick={() => setShowParty(v => !v)}
-              disabled={state.phase !== 'select'}
-            >
+          <div style={{ display: 'flex', gap: 8, flexWrap:'wrap' }}>
+            <button className="btn secondary" onClick={() => setShowParty(v=>!v)} disabled={state.phase !== 'select'}>
               🔄 Pokémon wechseln
             </button>
-            <button className="btn" onClick={() => window.location.reload()}>🔁 Neues Match</button>
+            <button className="btn ghost" onClick={() => window.location.reload()}>🔁 Neues Match</button>
             <button className="btn" onClick={onExit}>⬅️ Zurück</button>
           </div>
 
@@ -209,7 +222,7 @@ export default function BattleScreen({ room, teams, onExit }) {
           )}
         </div>
 
-        {/* Dialog + (scrollbarer) Log */}
+        {/* Dialog + Log */}
         <div className="dialog">
           <div style={{ minHeight: 48 }}>{waitingOnOpponent ? '⏳ Warten auf Gegner…' : lastLine}</div>
           <div className="small" style={{ marginTop: 8, opacity: .7 }}>Battle-Log</div>
