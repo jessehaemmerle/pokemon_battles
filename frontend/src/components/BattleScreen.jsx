@@ -66,7 +66,9 @@ export default function BattleScreen({ room, teams, onExit }) {
     room, teams,
     active: { player1: 0, player2: 0 },
     over: false, winner: null,
-    phase: 'select', turnOwner: 'player1'
+    phase: 'select', turnOwner: 'player1',
+    // NEU: Field-Info für Weather/Terrain (für Badges)
+    field: { weather: { type: null, turns: 0 }, terrain: { type: null, turns: 0 } }
   });
 
   // Animations
@@ -142,7 +144,7 @@ export default function BattleScreen({ room, teams, onExit }) {
     };
 
     const onStatusTick = ({ side, type, damage }) => {
-      const tag = { burn: 'Burn', poison: 'Gift' }[type] || type;
+      const tag = { burn: 'Burn', poison: 'Gift', toxic:'Toxin' }[type] || type;
       setLog(prev => [...prev, `☠️ ${side} erleidet ${damage} Schaden durch ${tag}.`]);
     };
 
@@ -151,8 +153,16 @@ export default function BattleScreen({ room, teams, onExit }) {
       setLog(prev => [...prev, `🧼 ${target} ${msg}`]);
     };
 
-    const onItemHeal = ({ side, item, amount }) => {
+    // robust gegen { heal } oder { amount }
+    const onItemHeal = (payload) => {
+      const { side, item } = payload || {};
+      const amount = payload?.amount ?? payload?.heal ?? 0;
       if (item === 'leftovers') setLog(prev => [...prev, `🍽️ ${side} heilt ${amount} KP durch Leftovers.`]);
+    };
+
+    // nur fürs Log, beeinflusst UI nicht
+    const onWeatherChip = ({ side, type, damage }) => {
+      setLog(prev => [...prev, `🌪️ ${side} erleidet ${damage} Schaden durch ${type}.`]);
     };
 
     const onFainted = ({ fainted, target }) => {
@@ -193,6 +203,7 @@ export default function BattleScreen({ room, teams, onExit }) {
     socket.on('status-tick', onStatusTick);
     socket.on('status-clear', onStatusClear);
     socket.on('item-heal', onItemHeal);
+    socket.on('weather-chip', onWeatherChip);
     socket.on('pokemon-fainted', onFainted);
     socket.on('switch-ok', onSwitchOk);
     socket.on('turn-end', onTurnEnd);
@@ -212,6 +223,7 @@ export default function BattleScreen({ room, teams, onExit }) {
       socket.off('status-tick', onStatusTick);
       socket.off('status-clear', onStatusClear);
       socket.off('item-heal', onItemHeal);
+      socket.off('weather-chip', onWeatherChip);
       socket.off('pokemon-fainted', onFainted);
       socket.off('switch-ok', onSwitchOk);
       socket.off('turn-end', onTurnEnd);
@@ -266,15 +278,37 @@ export default function BattleScreen({ room, teams, onExit }) {
     setShowParty(false);
   };
 
+  // NEU: Weather-/Terrain-Badges (inkl. Restlaufzeit)
+  const weatherLabel = state.field?.weather?.type ? (
+    { rain:'🌧️ Regen', sun:'☀️ Sonne', sand:'🌪️ Sandsturm', hail:'🌨️ Hagel' }[state.field.weather.type]
+  ) : null;
+  const terrainLabel = state.field?.terrain?.type ? (
+    { electric:'⚡ Elektrofeld', grassy:'🌿 Grasfeld' }[state.field.terrain.type]
+  ) : null;
+  const weatherTurns = state.field?.weather?.turns || 0;
+  const terrainTurns = state.field?.terrain?.turns || 0;
+
   return (
     <div className="container">
-      {/* Turn badge */}
+      {/* Turn badge + Field Badges */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 8 }}>
         <div className="badge" style={{ background: myTurn ? '#111827' : '#6b7280' }}>
           {myTurn ? '🎯 Dein Zug' : '⌛ Gegner ist dran'}
         </div>
-        <div className="small">
-          {choiceLock ? `Choice-Lock: ${choiceLock}` : (myTurn ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…') : 'Bitte warten…')}
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          {weatherLabel && (
+            <div className="badge" style={{ background:'#0f172a' }}>
+              {weatherLabel}{weatherTurns ? ` (${weatherTurns})` : ''}
+            </div>
+          )}
+          {terrainLabel && (
+            <div className="badge" style={{ background:'#065f46' }}>
+              {terrainLabel}{terrainTurns ? ` (${terrainTurns})` : ''}
+            </div>
+          )}
+          <div className="small">
+            {choiceLock ? `Choice-Lock: ${choiceLock}` : (myTurn ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…') : 'Bitte warten…')}
+          </div>
         </div>
       </div>
 
