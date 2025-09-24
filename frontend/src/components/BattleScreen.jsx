@@ -7,65 +7,61 @@ export default function BattleScreen({ room, teams, onExit }) {
     teams,
     active: { player1: 0, player2: 0 },
     over: false,
-    winner: null
+    winner: null,
+    phase: 'select',
+    locks: {}
   });
   const [log, setLog] = useState([]);
-  const [hitPlayer, setHitPlayer] = useState(false);
-  const [hitEnemy, setHitEnemy] = useState(false);
+  const [hitP1, setHitP1] = useState(false);
+  const [hitP2, setHitP2] = useState(false);
   const logRef = useRef(null);
 
-  // Listener
   useEffect(() => {
-    const onState = (snap) => setState((prev) => ({ ...prev, ...snap }));
-
+    const onBattleStart = (p) => {
+      setState(s => ({ ...s, ...p }));
+    };
+    const onState = (snap) => setState(s => ({ ...s, ...snap }));
+    const onTurnState = (p) => setState(s => ({ ...s, ...p }));
+    const onMessage = (m) => setLog(prev => [...prev, m]);
     const onMove = (d) => {
-      // Trefferanimation
-      if (d.target === 'player1') {
-        setHitPlayer(true); setTimeout(() => setHitPlayer(false), 180);
-      } else {
-        setHitEnemy(true); setTimeout(() => setHitEnemy(false), 180);
-      }
+      if (d.target === 'player1') { setHitP1(true); setTimeout(()=>setHitP1(false),180); }
+      else { setHitP2(true); setTimeout(()=>setHitP2(false),180); }
 
-      // Log Text inkl. Effektivität
       let effTxt = '';
       if (d.effectiveness === 0) effTxt = ' (keine Wirkung)';
       else if (d.effectiveness >= 2) effTxt = ' (sehr effektiv!)';
       else if (d.effectiveness <= 0.5) effTxt = ' (nicht sehr effektiv)';
       const critTxt = d.crit ? ' ✨Krit!' : '';
-      setLog(prev => [...prev, `➡️ ${d.side} nutzt ${d.move} gegen ${d.target}: ${d.damage} Schaden${effTxt}${critTxt}`]);
+      setLog(prev => [...prev, `➡️ ${d.side} nutzt ${d.move} auf ${d.target}: ${d.damage} Schaden${effTxt}${critTxt}`]);
     };
+    const onFainted = ({ fainted, target }) => setLog(prev => [...prev, `💀 ${fainted} (${target}) wurde besiegt!`]);
+    const onSwitchOk = ({ side, toIndex }) => setLog(prev => [...prev, `🔄 ${side} wechselt: Slot ${toIndex+1}`]);
+    const onTurnEnd = () => setLog(prev => [...prev, `--- Rundenende ---`]);
+    const onEnd = ({ winner }) => setLog(prev => [...prev, `🏆 ${winner} gewinnt den Kampf!`]);
+    const onError = (msg) => setLog(prev => [...prev, `⚠️ Fehler: ${msg}`]);
 
-    const onFaint = ({ fainted, target }) => {
-      setLog(prev => [...prev, `💀 ${fainted} von ${target} wurde besiegt!`]);
-    };
-
-    const onSwitch = ({ side, toIndex }) => {
-      setLog(prev => [...prev, `🔄 ${side} wechselt auf Slot ${toIndex + 1}.`]);
-    };
-
-    const onEnd = ({ winner }) => {
-      setLog(prev => [...prev, `🏆 ${winner} gewinnt den Kampf!`]);
-    };
-
-    const onError = (msg) => {
-      setLog(prev => [...prev, `⚠️ Fehler: ${msg}`]);
-    };
-
+    socket.on('battle-start', onBattleStart);
     socket.on('state-update', onState);
+    socket.on('turn-state', onTurnState);
+    socket.on('message', onMessage);
     socket.on('move-made', onMove);
-    socket.on('pokemon-fainted', onFaint);
-    socket.on('switch-ok', onSwitch);
+    socket.on('pokemon-fainted', onFainted);
+    socket.on('switch-ok', onSwitchOk);
+    socket.on('turn-end', onTurnEnd);
     socket.on('battle-end', onEnd);
     socket.on('error-message', onError);
 
-    // Direkt bei Mount den Snapshot anfragen (z. B. nach Refresh)
     socket.emit('request-state', { room });
 
     return () => {
+      socket.off('battle-start', onBattleStart);
       socket.off('state-update', onState);
+      socket.off('turn-state', onTurnState);
+      socket.off('message', onMessage);
       socket.off('move-made', onMove);
-      socket.off('pokemon-fainted', onFaint);
-      socket.off('switch-ok', onSwitch);
+      socket.off('pokemon-fainted', onFainted);
+      socket.off('switch-ok', onSwitchOk);
+      socket.off('turn-end', onTurnEnd);
       socket.off('battle-end', onEnd);
       socket.off('error-message', onError);
     };
@@ -77,98 +73,101 @@ export default function BattleScreen({ room, teams, onExit }) {
 
   if (!state.teams) return <div>Warte auf Teams…</div>;
 
-  const activeP1 = state.teams.player1[state.active.player1];
-  const activeP2 = state.teams.player2[state.active.player2];
+  const p1 = state.teams.player1[state.active.player1];
+  const p2 = state.teams.player2[state.active.player2];
 
-  const hpFill = (current, total) => {
-    const pct = Math.max(0, Math.round((current / total) * 100));
-    let cls = 'ok'; if (pct < 50) cls = 'mid'; if (pct < 25) cls = 'low';
-    return (
-      <div className="healthbar">
-        <div className={`fill ${cls}`} style={{ width: `${pct}%` }} />
-      </div>
-    );
+  const hp = (cur, max) => {
+    const pct = Math.max(0, Math.round((cur/max)*100));
+    let cls = 'ok'; if (pct<50) cls='mid'; if (pct<25) cls='low';
+    return <div className="healthbar"><div className={`fill ${cls}`} style={{width:`${pct}%`}}/></div>;
   };
 
-  const makeMove = (moveIndex) => {
-    socket.emit('move', { room, side: 'player1', moveIndex });
+  const lockMove = (idx) => {
+    if (state.phase !== 'select' || state.over) return;
+    socket.emit('lock-action', { room, side: 'player1', type: 'move', index: idx });
   };
 
   const canSwitchTo = (idx) => {
-    const p = state.teams.player1[idx];
-    return p.currentHp > 0 && idx !== state.active.player1;
+    const mon = state.teams.player1[idx];
+    return mon.currentHp>0 && idx!==state.active.player1;
+  };
+  const lockSwitch = (idx) => {
+    if (state.phase !== 'select' || state.over) return;
+    socket.emit('lock-action', { room, side: 'player1', type: 'switch', index: idx });
   };
 
-  const doSwitch = (idx) => {
-    socket.emit('switch', { room, side: 'player1', toIndex: idx });
-  };
+  const waiting =
+    state.phase === 'select' &&
+    !!state.locks?.player1 &&
+    !state.locks?.player2;
 
   return (
     <div>
       <div className="row">
         {/* Spieler */}
-        <div className="card" style={{ flex: 1, minWidth: 280, textAlign: 'center' }}>
-          <img
-            src={activeP1.sprite}
-            alt={activeP1.name}
-            className={`sprite ${hitPlayer ? 'hit' : ''}`}
-          />
-          <h3 style={{ margin: '8px 0' }}>{activeP1.name}</h3>
-          {hpFill(activeP1.currentHp, activeP1.stats.hp)}
-          <div style={{ marginTop: 12 }} className="grid grid-2">
-            {activeP1.moves.map((m, i) => (
-              <button key={i} className="btn" onClick={() => makeMove(i)}>
+        <div className="card" style={{ flex:1, minWidth:280, textAlign:'center' }}>
+          <img src={p1.sprite} alt={p1.name} className={`sprite ${hitP1?'hit':''}`} />
+          <h3 style={{margin:'8px 0'}}>{p1.name}</h3>
+          {hp(p1.currentHp, p1.stats.hp)}
+
+          <div style={{marginTop:12}} className="grid grid-2">
+            {p1.moves.map((m,i)=>(
+              <button key={i} className="btn"
+                onClick={()=>lockMove(i)}
+                disabled={state.phase!=='select' || !!state.locks?.player1}
+                title={state.phase!=='select' ? 'Warte auf nächste Runde' : (!!state.locks?.player1 ? 'Schon gelockt' : m.name)}>
                 {m.name}
               </button>
             ))}
           </div>
-          <h4 style={{ marginTop: 16 }}>🔄 Wechseln</h4>
+
+          <h4 style={{marginTop:16}}>🔄 Wechseln</h4>
           <div className="grid grid-3">
-            {state.teams.player1.map((p, i) => (
-              <button
-                key={p.id}
-                className="btn"
-                onClick={() => doSwitch(i)}
-                disabled={!canSwitchTo(i)}
-                title={p.currentHp <= 0 ? 'Kampfunfähig' : (i === state.active.player1 ? 'Bereits aktiv' : `Wechsel zu ${p.name}`)}
-                style={{ opacity: canSwitchTo(i) ? 1 : 0.5 }}
-              >
-                {i+1}. {p.name}
+            {state.teams.player1.map((mon, i)=>(
+              <button key={mon.id} className="btn"
+                onClick={()=>lockSwitch(i)}
+                disabled={!canSwitchTo(i) || !!state.locks?.player1 || state.phase!=='select'}
+                style={{opacity: canSwitchTo(i) && state.phase==='select' && !state.locks?.player1 ? 1 : 0.5}}>
+                {i+1}. {mon.name}
               </button>
             ))}
           </div>
         </div>
 
         {/* Gegner */}
-        <div className="card" style={{ flex: 1, minWidth: 280, textAlign: 'center' }}>
-          <img
-            src={activeP2.sprite}
-            alt={activeP2.name}
-            className={`sprite ${hitEnemy ? 'hit' : ''}`}
-          />
-          <h3 style={{ margin: '8px 0' }}>{activeP2.name}</h3>
-          {hpFill(activeP2.currentHp, activeP2.stats.hp)}
+        <div className="card" style={{ flex:1, minWidth:280, textAlign:'center' }}>
+          <img src={p2.sprite} alt={p2.name} className={`sprite ${hitP2?'hit':''}`} />
+          <h3 style={{margin:'8px 0'}}>{p2.name}</h3>
+          {hp(p2.currentHp, p2.stats.hp)}
         </div>
       </div>
 
-      <div style={{ marginTop: 16 }} className="log" ref={logRef}>
-        <strong>📜 Battle Log</strong>
-        <div style={{ height: 6 }} />
-        {log.map((l, i) => <div key={i}>{l}</div>)}
+      <div style={{marginTop:12}} className="card">
+        <div style={{display:'flex', alignItems:'center', gap:8}}>
+          <strong>Phase:</strong> {state.phase === 'select' ? 'Auswahl' : 'Auflösung'}
+          {waiting && <span style={{marginLeft:8}}>⏳ Warten auf Gegner …</span>}
+          {state.locks?.player1 && <span style={{marginLeft:8}}>✅ Dein Zug ist gelockt</span>}
+        </div>
       </div>
 
-      <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+      <div style={{marginTop:12}} className="log" ref={logRef}>
+        <strong>📜 Battle Log</strong>
+        <div style={{height:6}}/>
+        {log.map((l,i)=><div key={i}>{l}</div>)}
+      </div>
+
+      <div style={{marginTop:12, display:'flex', gap:8}}>
         {state.over ? (
           <>
-            <div className="card" style={{ padding: 10 }}>
+            <div className="card" style={{padding:10}}>
               🏆 Sieger: <b>{state.winner}</b>
             </div>
-            <button className="btn" onClick={() => window.location.reload()}>🔁 Neues Match</button>
+            <button className="btn" onClick={()=>window.location.reload()}>🔁 Neues Match</button>
             <button className="btn secondary" onClick={onExit}>⬅️ Zurück</button>
           </>
         ) : (
           <>
-            <button className="btn" onClick={() => window.location.reload()}>🔁 Neues Match</button>
+            <button className="btn" onClick={()=>window.location.reload()}>🔁 Neues Match</button>
             <button className="btn secondary" onClick={onExit}>⬅️ Zurück</button>
           </>
         )}

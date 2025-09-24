@@ -5,27 +5,24 @@ import { Server } from 'socket.io';
 import {
   startBotBattle,
   startPvpQuickMatch,
-  handlePlayerMove,
-  handlePlayerSwitch,
-  getRoomSnapshot
+  clientLockAction,
+  clientRequestSnapshot
 } from './battles.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Healthcheck für Render
+// Healthcheck
 app.get('/health', (_, res) => res.status(200).json({ ok: true }));
 
 const server = createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*' } // In Prod: Domain whitelisten
-});
+const io = new Server(server, { cors: { origin: '*' } });
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
-  // Online Random Battle (mit Einzel- oder Multi-Generationen)
+  // PvP/Demo (Server generiert beide Teams sofort)
   socket.on('join-random', async (data) => {
     try {
       const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);
@@ -36,7 +33,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Bot-Battle (mit Einzel- oder Multi-Generationen)
+  // Bot-Battle
   socket.on('start-bot-battle', async (data) => {
     try {
       const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);
@@ -47,30 +44,19 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Spieler führt eine Attacke aus
-  socket.on('move', async (payload) => {
+  // Spieler locked seinen Zug (Move oder Switch)
+  socket.on('lock-action', async (payload) => {
     try {
-      await handlePlayerMove(io, socket, payload);
+      await clientLockAction(io, socket, payload);
     } catch (e) {
       console.error(e);
-      socket.emit('error-message', 'Zug fehlgeschlagen.');
+      socket.emit('error-message', 'Aktion konnte nicht gelockt werden.');
     }
   });
 
-  // Spieler wechselt Pokémon
-  socket.on('switch', async (payload) => {
-    try {
-      await handlePlayerSwitch(io, socket, payload);
-    } catch (e) {
-      console.error(e);
-      socket.emit('error-message', 'Wechsel fehlgeschlagen.');
-    }
-  });
-
-  // Snapshot (z. B. nach Refresh)
+  // Snapshot anfordern (z. B. nach Refresh)
   socket.on('request-state', ({ room }) => {
-    const snap = getRoomSnapshot(room);
-    if (snap) socket.emit('state-update', snap);
+    clientRequestSnapshot(io, socket, room);
   });
 
   socket.on('disconnect', () => {
