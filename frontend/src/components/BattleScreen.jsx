@@ -16,10 +16,10 @@ export default function BattleScreen({ room, teams, onExit }) {
     room, teams,
     active: { player1: 0, player2: 0 },
     over: false, winner: null,
-    phase: 'select', locks: {}
+    phase: 'select',
+    turnOwner: 'player1'
   });
 
-  // Animation flags
   const [atkP1, setAtkP1] = useState(false);
   const [atkP2, setAtkP2] = useState(false);
   const [defP1, setDefP1] = useState(false);
@@ -33,7 +33,6 @@ export default function BattleScreen({ room, teams, onExit }) {
   const p1 = state?.teams?.player1?.[state.active.player1];
   const p2 = state?.teams?.player2?.[state.active.player2];
 
-  // Helpers
   const lv = (mon) => Math.max(1, Math.round(mon.stats.speed / 10));
   const hpBox = (mon) => (
     <>
@@ -56,14 +55,8 @@ export default function BattleScreen({ room, teams, onExit }) {
     const onMessage = (m) => { setLastLine(m); setLog(prev => [...prev, m]); };
 
     const onMove = (d) => {
-      // attack & defend animation toggles
-      if (d.side === 'player1') {
-        setAtkP1(true); setTimeout(()=>setAtkP1(false), 460);
-        setDefP2(true); setTimeout(()=>setDefP2(false), 460);
-      } else {
-        setAtkP2(true); setTimeout(()=>setAtkP2(false), 460);
-        setDefP1(true); setTimeout(()=>setDefP1(false), 460);
-      }
+      if (d.side === 'player1') { setAtkP1(true); setTimeout(()=>setAtkP1(false), 460); setDefP2(true); setTimeout(()=>setDefP2(false), 460); }
+      else { setAtkP2(true); setTimeout(()=>setAtkP2(false), 460); setDefP1(true); setTimeout(()=>setDefP1(false), 460); }
 
       let effTxt = '';
       if (d.effectiveness === 0) effTxt = ' (keine Wirkung)';
@@ -83,7 +76,7 @@ export default function BattleScreen({ room, teams, onExit }) {
       const line = `🔄 ${side} wechselt zu ${mon}.`;
       setLastLine(line); setLog(prev => [...prev, line]);
     };
-    const onTurnEnd = () => setLog(prev => [...prev, '--- Rundenende ---']);
+    const onTurnEnd = () => setLog(prev => [...prev, '— Rundenende —']);
     const onEnd = ({ winner }) => {
       const line = `🏆 ${winner} gewinnt den Kampf!`;
       setLastLine(line); setLog(prev => [...prev, line]);
@@ -124,11 +117,11 @@ export default function BattleScreen({ room, teams, onExit }) {
 
   if (!state.teams || !p1 || !p2) return <div className="container">Warte auf Teams…</div>;
 
-  const waitingOnOpponent = state.phase === 'select' && !!state.locks?.player1 && !state.locks?.player2;
+  const myTurn = state.turnOwner === 'player1';
+  const canClick = myTurn && state.phase === 'select' && !state.over;
 
-  // Actions
   const lockMove = (idx) => {
-    if (state.phase !== 'select' || state.over) return;
+    if (!canClick) return;
     socket.emit('lock-action', { room, side: 'player1', type: 'move', index: idx });
   };
   const canSwitchTo = (idx) => {
@@ -136,20 +129,22 @@ export default function BattleScreen({ room, teams, onExit }) {
     return mon.currentHp > 0 && idx !== state.active.player1;
   };
   const lockSwitch = (idx) => {
-    if (state.phase !== 'select' || state.over) return;
+    if (!canClick) return;
     socket.emit('lock-action', { room, side: 'player1', type: 'switch', index: idx });
     setShowParty(false);
   };
 
   return (
     <div className="container">
-      {/* Turn badges */}
+      {/* Turn badge */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 8 }}>
-        <div className="badge" style={{ background: state.phase==='select' ? '#111827' : '#6b7280' }}>
-          {state.phase === 'select' ? '🎯 Auswahlphase' : '⚡ Auflösungsphase'}
+        <div className="badge" style={{ background: myTurn ? '#111827' : '#6b7280' }}>
+          {myTurn ? '🎯 Dein Zug' : '⌛ Gegner ist dran'}
         </div>
         <div className="helper">
-          {waitingOnOpponent ? '⏳ Dein Zug ist gelockt – warte auf Gegner…' : (state.locks?.player1 ? 'Dein Zug ist gelockt' : 'Wähle eine Aktion')}
+          {myTurn
+            ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…')
+            : 'Bitte warten…'}
         </div>
       </div>
 
@@ -160,18 +155,17 @@ export default function BattleScreen({ room, teams, onExit }) {
         <div className="platform enemy" />
         <div className="platform player" />
 
-        <div className="info-box info-top">{hpBox(p2)}</div>
-        <div className="info-box info-bottom">{hpBox(p1)}</div>
+        <div className="info-box info-top">
+          <div className="info-row"><div className="info-name">{p2.name}</div><div className="info-lv">Lv{Math.max(1, Math.round(p2.stats.speed/10))}</div></div>
+          <div className="info-row">{hpFillNode(p2.currentHp, p2.stats.hp)}<div className="small">{p2.currentHp}/{p2.stats.hp}</div></div>
+        </div>
+        <div className="info-box info-bottom">
+          <div className="info-row"><div className="info-name">{p1.name}</div><div className="info-lv">Lv{Math.max(1, Math.round(p1.stats.speed/10))}</div></div>
+          <div className="info-row">{hpFillNode(p1.currentHp, p1.stats.hp)}<div className="small">{p1.currentHp}/{p1.stats.hp}</div></div>
+        </div>
 
-        {/* Sprites mit Angriffs-/Treffer-Animationen */}
-        <img
-          className={`sprite enemy ${atkP2 ? 'attack-left' : ''} ${defP2 ? 'defend-shake' : ''}`}
-          src={p2.sprite} alt={p2.name}
-        />
-        <img
-          className={`sprite player ${atkP1 ? 'attack-right' : ''} ${defP1 ? 'defend-shake' : ''}`}
-          src={p1.sprite} alt={p1.name}
-        />
+        <img className={`sprite enemy ${atkP2 ? 'attack-left' : ''} ${defP2 ? 'defend-shake' : ''}`} src={p2.sprite} alt={p2.name}/>
+        <img className={`sprite player ${atkP1 ? 'attack-right' : ''} ${defP1 ? 'defend-shake' : ''}`} src={p1.sprite} alt={p1.name}/>
       </div>
 
       {/* UI */}
@@ -180,21 +174,13 @@ export default function BattleScreen({ room, teams, onExit }) {
         <div className="command">
           <div className="grid grid-2" style={{ marginBottom: 10 }}>
             {p1.moves.map((m, i) => (
-              <button
-                key={i}
-                className="btn"
-                onClick={() => lockMove(i)}
-                disabled={state.phase !== 'select' || !!state.locks?.player1}
-                title={m.name}
-              >
+              <button key={i} className="btn" onClick={() => lockMove(i)} disabled={!canClick} title={m.name}>
                 {m.name}
               </button>
             ))}
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap:'wrap' }}>
-            <button className="btn secondary" onClick={() => setShowParty(v=>!v)} disabled={state.phase !== 'select'}>
-              🔄 Pokémon wechseln
-            </button>
+            <button className="btn secondary" onClick={() => setShowParty(v=>!v)} disabled={!canClick}>🔄 Pokémon wechseln</button>
             <button className="btn ghost" onClick={() => window.location.reload()}>🔁 Neues Match</button>
             <button className="btn" onClick={onExit}>⬅️ Zurück</button>
           </div>
@@ -207,12 +193,7 @@ export default function BattleScreen({ room, teams, onExit }) {
                     <img src={mon.sprite} alt={mon.name} style={{ width: 72, imageRendering: 'pixelated' }} />
                     <div className="party-name">{i+1}. {mon.name}</div>
                     <div className="small">{mon.currentHp}/{mon.stats.hp} HP</div>
-                    <button
-                      className="btn"
-                      style={{ marginTop: 6 }}
-                      disabled={!canSwitchTo(i) || !!state.locks?.player1}
-                      onClick={() => lockSwitch(i)}
-                    >
+                    <button className="btn" style={{ marginTop: 6 }} disabled={!canSwitchTo(i) || !canClick} onClick={() => lockSwitch(i)}>
                       Wechseln
                     </button>
                   </div>
@@ -224,7 +205,7 @@ export default function BattleScreen({ room, teams, onExit }) {
 
         {/* Dialog + Log */}
         <div className="dialog">
-          <div style={{ minHeight: 48 }}>{waitingOnOpponent ? '⏳ Warten auf Gegner…' : lastLine}</div>
+          <div style={{ minHeight: 48 }}>{lastLine}</div>
           <div className="small" style={{ marginTop: 8, opacity: .7 }}>Battle-Log</div>
           <div className="log" ref={logRef}>
             {log.map((l, i) => <div key={i}>{l}</div>)}

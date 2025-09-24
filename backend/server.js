@@ -22,7 +22,6 @@ const io = new Server(server, { cors: { origin: '*' } });
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
-  // PvP/Demo (Server generiert beide Teams sofort)
   socket.on('join-random', async (data) => {
     try {
       const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);
@@ -33,7 +32,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Bot-Battle
   socket.on('start-bot-battle', async (data) => {
     try {
       const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);
@@ -44,7 +42,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Spieler locked seinen Zug (Move oder Switch)
+  // EINZUG-RUNDEN: genau 1 Aktion pro Runde
   socket.on('lock-action', async (payload) => {
     try {
       await clientLockAction(io, socket, payload);
@@ -54,7 +52,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Snapshot anfordern (z. B. nach Refresh)
   socket.on('request-state', ({ room }) => {
     clientRequestSnapshot(io, socket, room);
   });
