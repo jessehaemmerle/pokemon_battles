@@ -15,24 +15,32 @@ export default function TeamBuilder() {
   };
 
   return (
-    <div className="mb-6">
-      <h2 className="text-xl font-bold">Team Builder</h2>
-      <input
-        className="border p-2 rounded mr-2"
-        type="text"
-        value={pokemonId}
-        onChange={(e) => setPokemonId(e.target.value)}
-        placeholder="Pokémon ID oder Name"
-      />
-      <button className="bg-green-500 text-white px-4 py-2 rounded" onClick={addPokemon}>
-        Hinzufügen
-      </button>
+    <div className="bg-white p-6 rounded-xl shadow-lg mb-6">
+      <h2 className="text-xl font-bold mb-4">👥 Team Builder</h2>
+      <div className="flex gap-2 mb-4">
+        <input
+          className="border p-2 rounded flex-grow"
+          type="text"
+          value={pokemonId}
+          onChange={(e) => setPokemonId(e.target.value)}
+          placeholder="Pokémon ID oder Name"
+        />
+        <button
+          className="bg-green-500 text-white px-4 py-2 rounded shadow hover:bg-green-600"
+          onClick={addPokemon}
+        >
+          ➕ Hinzufügen
+        </button>
+      </div>
 
-      <div className="flex mt-4 space-x-4">
+      <div className="grid grid-cols-3 gap-4">
         {team.map((p) => (
-          <div key={p.id} className="text-center">
-            <img src={p.sprite} alt={p.name} className="w-20 mx-auto" />
-            <p>{p.name}</p>
+          <div
+            key={p.id}
+            className="bg-gray-100 p-3 rounded-lg text-center shadow hover:scale-105 transition"
+          >
+            <img src={p.sprite} alt={p.name} className="w-20 mx-auto drop-shadow" />
+            <p className="font-semibold">{p.name}</p>
           </div>
         ))}
       </div>

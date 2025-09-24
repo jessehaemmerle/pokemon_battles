@@ -3,6 +3,18 @@ import io from 'socket.io-client';
 
 const socket = io(import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000');
 
+const typeColors = {
+  fire: "bg-red-500",
+  water: "bg-blue-500",
+  electric: "bg-yellow-400 text-black",
+  grass: "bg-green-500",
+  normal: "bg-gray-400",
+  psychic: "bg-pink-500",
+  ice: "bg-cyan-400",
+  fighting: "bg-orange-700",
+  dragon: "bg-purple-700",
+};
+
 export default function BattleScreen({ room, teams }) {
   const [battleTeams, setBattleTeams] = useState(teams);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -17,11 +29,11 @@ export default function BattleScreen({ room, teams }) {
         if (updated[targetTeam][0].currentHp < 0) updated[targetTeam][0].currentHp = 0;
         return updated;
       });
-      setLog((prev) => [...prev, `${data.move} verursachte ${data.damage} Schaden!`]);
+      setLog((prev) => [...prev, `✨ ${data.move} verursacht ${data.damage} Schaden!`]);
     });
 
     socket.on('pokemon-fainted', ({ fainted }) => {
-      setLog((prev) => [...prev, `${fainted} wurde besiegt!`]);
+      setLog((prev) => [...prev, `💀 ${fainted} wurde besiegt!`]);
     });
   }, []);
 
@@ -36,56 +48,64 @@ export default function BattleScreen({ room, teams }) {
 
   const switchPokemon = (index) => setActiveIndex(index);
 
+  const renderHealthBar = (current, total) => {
+    const percentage = (current / total) * 100;
+    let color = "bg-green-500";
+    if (percentage < 50) color = "bg-yellow-400";
+    if (percentage < 25) color = "bg-red-500";
+    return (
+      <div className="w-40 h-5 bg-gray-300 rounded overflow-hidden shadow-inner">
+        <div className={`${color} h-5 transition-all duration-500`} style={{ width: `${percentage}%` }} />
+      </div>
+    );
+  };
+
   return (
-    <div>
-      <h2 className="text-2xl font-bold mb-4">Battle Room: {room}</h2>
+    <div className="bg-gradient-to-b from-blue-200 to-green-200 p-6 rounded-2xl shadow-lg">
+      <h2 className="text-2xl font-extrabold mb-6 text-center">⚔️ Battle Room: {room}</h2>
+
       <div className="flex justify-around mb-6">
-        <div className="text-center">
-          <img src={player.sprite} alt={player.name} className="w-32 mx-auto" />
-          <p>{player.name}</p>
-          <div className="bg-gray-300 w-40 h-4 mx-auto rounded">
-            <div
-              className="bg-green-500 h-4 rounded"
-              style={{ width: `${(player.currentHp / player.stats.hp) * 100}%` }}
-            />
-          </div>
-          <div className="mt-2">
+        {/* Spieler */}
+        <div className="text-center bg-white rounded-xl p-4 shadow-md w-64">
+          <img src={player.sprite} alt={player.name} className="w-32 mx-auto drop-shadow-lg" />
+          <p className="font-bold text-lg">{player.name}</p>
+          {renderHealthBar(player.currentHp, player.stats.hp)}
+          <div className="mt-4 grid grid-cols-2 gap-2">
             {player.moves.map((m, i) => (
               <button
                 key={i}
-                className="bg-blue-500 text-white px-3 py-1 rounded m-1"
+                className={`${typeColors[m.type] || "bg-gray-500"} text-white px-3 py-2 rounded-lg shadow hover:scale-105 transition`}
                 onClick={() => makeMove(m)}
               >
                 {m.name}
               </button>
             ))}
           </div>
-          <h4 className="mt-2 font-semibold">Team wechseln:</h4>
-          {battleTeams.player1.map((p, i) => (
-            <button
-              key={i}
-              className="bg-gray-500 text-white px-2 py-1 rounded m-1"
-              onClick={() => switchPokemon(i)}
-            >
-              {p.name}
-            </button>
-          ))}
+          <h4 className="mt-4 font-semibold">🔄 Pokémon wechseln:</h4>
+          <div className="flex flex-wrap gap-2 justify-center">
+            {battleTeams.player1.map((p, i) => (
+              <button
+                key={i}
+                className="bg-gray-700 text-white px-2 py-1 rounded shadow hover:bg-gray-900"
+                onClick={() => switchPokemon(i)}
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="text-center">
-          <img src={enemy.sprite} alt={enemy.name} className="w-32 mx-auto" />
-          <p>{enemy.name}</p>
-          <div className="bg-gray-300 w-40 h-4 mx-auto rounded">
-            <div
-              className="bg-red-500 h-4 rounded"
-              style={{ width: `${(enemy.currentHp / enemy.stats.hp) * 100}%` }}
-            />
-          </div>
+        {/* Gegner */}
+        <div className="text-center bg-white rounded-xl p-4 shadow-md w-64">
+          <img src={enemy.sprite} alt={enemy.name} className="w-32 mx-auto drop-shadow-lg" />
+          <p className="font-bold text-lg">{enemy.name}</p>
+          {renderHealthBar(enemy.currentHp, enemy.stats.hp)}
         </div>
       </div>
 
-      <div className="bg-white p-3 border rounded h-40 overflow-y-auto">
-        <h3 className="font-bold">Battle Log</h3>
+      {/* Battle Log */}
+      <div className="bg-black text-green-400 font-mono p-4 rounded-lg h-40 overflow-y-auto border-2 border-green-500 shadow-inner">
+        <h3 className="font-bold mb-2">📜 Battle Log</h3>
         {log.map((entry, i) => (
           <p key={i}>{entry}</p>
         ))}

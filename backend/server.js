@@ -32,5 +32,10 @@ io.on('connection', (socket) => {
   });
 });
 
+socket.on('start-bot-battle', (data) => {
+  handleBotBattle(socket, data?.generation || 1);
+});
+
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server läuft auf Port ${PORT}`));

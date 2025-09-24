@@ -113,3 +113,32 @@ async function generateRandomTeam(generation) {
   }
   return team;
 }
+
+export async function startBotBattle(socket, generation = 1) {
+  const room = `bot-${socket.id}`;
+  socket.join(room);
+
+  const playerTeam = await generateRandomTeam(generation);
+  const botTeam = await generateRandomTeam(generation);
+
+  // Sende beide Teams an den Client
+  socket.emit('battle-start', { room, teams: { player1: playerTeam, player2: botTeam } });
+
+  // Bot-Moves automatisch ablaufen lassen
+  const botInterval = setInterval(() => {
+    const activeBotPokemon = botTeam[0];
+    const move = activeBotPokemon.moves[Math.floor(Math.random() * activeBotPokemon.moves.length)];
+    
+    const damage = calculateDamage(activeBotPokemon, playerTeam[0], move);
+    playerTeam[0].currentHp -= damage;
+    if (playerTeam[0].currentHp < 0) playerTeam[0].currentHp = 0;
+
+    socket.emit('move-made', { move: move.name, damage, target: 'player1' });
+
+    if (playerTeam[0].currentHp <= 0) {
+      socket.emit('pokemon-fainted', { fainted: playerTeam[0].name, target: 'player1' });
+      clearInterval(botInterval);
+    }
+  }, 15000); // Bot macht alle 3 Sekunden einen Move
+}
+
