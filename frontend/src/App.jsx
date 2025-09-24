@@ -5,12 +5,19 @@ import RandomBattle from './components/RandomBattle';
 
 export default function App() {
   const [battleRoom, setBattleRoom] = useState(null);
+  const [teams, setTeams] = useState(null);
 
   return (
-    <div>
-      {!battleRoom && <RandomBattle setBattleRoom={setBattleRoom} />}
-      {battleRoom && <BattleScreen room={battleRoom} />}
-      <TeamBuilder />
+    <div className="p-4">
+      {!battleRoom && (
+        <>
+          <RandomBattle setBattleRoom={setBattleRoom} setTeams={setTeams} />
+          <TeamBuilder />
+        </>
+      )}
+      {battleRoom && (
+        <BattleScreen room={battleRoom} teams={teams} />
+      )}
     </div>
   );
 }
