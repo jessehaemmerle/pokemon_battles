@@ -6,10 +6,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // nur lokal nützlich, wenn du REST-Routen mit /api hättest
       '/api': 'http://localhost:3000'
     }
-  },
-  define: {
-    'process.env': {}
   }
 });

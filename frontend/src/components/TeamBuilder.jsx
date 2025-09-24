@@ -6,44 +6,44 @@ export default function TeamBuilder() {
 
   const addPokemon = async () => {
     if (!pokemonId) return;
-    const res = await fetch(
-      `${import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000'}/pokemon/${pokemonId}`
-    );
-    const poke = await res.json();
-    setTeam([...team, { id: poke.id, name: poke.name, sprite: poke.sprites.front_default }]);
-    setPokemonId('');
+    try {
+      const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${pokemonId.toLowerCase()}`);
+      if (!res.ok) throw new Error('Pokémon nicht gefunden');
+      const poke = await res.json();
+      setTeam(prev => [
+        ...prev,
+        { id: poke.id, name: poke.name, sprite: poke.sprites.front_default }
+      ]);
+      setPokemonId('');
+    } catch {
+      alert('Pokémon nicht gefunden. Versuche ID oder englischen Namen (z.B. pikachu).');
+    }
   };
 
   return (
-    <div className="bg-white p-6 rounded-xl shadow-lg mb-6">
-      <h2 className="text-xl font-bold mb-4">👥 Team Builder</h2>
-      <div className="flex gap-2 mb-4">
+    <div>
+      <h2 style={{ marginTop: 0 }}>👥 Team Builder</h2>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
         <input
-          className="border p-2 rounded flex-grow"
-          type="text"
+          className="input"
+          placeholder="ID oder Name (z.B. 25 oder pikachu)"
           value={pokemonId}
           onChange={(e) => setPokemonId(e.target.value)}
-          placeholder="Pokémon ID oder Name"
         />
-        <button
-          className="bg-green-500 text-white px-4 py-2 rounded shadow hover:bg-green-600"
-          onClick={addPokemon}
-        >
-          ➕ Hinzufügen
-        </button>
+        <button className="btn" onClick={addPokemon}>➕ Hinzufügen</button>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
-        {team.map((p) => (
-          <div
-            key={p.id}
-            className="bg-gray-100 p-3 rounded-lg text-center shadow hover:scale-105 transition"
-          >
-            <img src={p.sprite} alt={p.name} className="w-20 mx-auto drop-shadow" />
-            <p className="font-semibold">{p.name}</p>
-          </div>
-        ))}
-      </div>
+      {team.length > 0 && (
+        <div className="grid grid-3">
+          {team.map(p => (
+            <div key={p.id} className="kard">
+              <img src={p.sprite} alt={p.name} className="sprite" style={{ width: 96 }} />
+              <div style={{ fontWeight: 600, marginTop: 6 }}>{p.name}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {team.length === 0 && <div style={{ opacity: 0.7 }}>Füge Pokémon zu deinem Team hinzu.</div>}
     </div>
   );
 }
