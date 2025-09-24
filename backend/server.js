@@ -19,26 +19,28 @@ app.get('/health', (_, res) => res.status(200).json({ ok: true }));
 
 const server = createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' }
+  cors: { origin: '*' } // In Prod: Domain whitelisten
 });
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
-  // Schnelles PvP (vereinfachtes Matchmaking: Server generiert beide Teams sofort)
+  // Online Random Battle (mit Einzel- oder Multi-Generationen)
   socket.on('join-random', async (data) => {
     try {
-      await startPvpQuickMatch(io, socket, data?.generation || 1);
+      const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);
+      await startPvpQuickMatch(io, socket, gens);
     } catch (e) {
       console.error(e);
       socket.emit('error-message', 'Online-Battle konnte nicht gestartet werden.');
     }
   });
 
-  // Bot-Battle
+  // Bot-Battle (mit Einzel- oder Multi-Generationen)
   socket.on('start-bot-battle', async (data) => {
     try {
-      await startBotBattle(io, socket, data?.generation || 1);
+      const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);
+      await startBotBattle(io, socket, gens);
     } catch (e) {
       console.error(e);
       socket.emit('error-message', 'Bot-Battle konnte nicht gestartet werden.');
@@ -65,7 +67,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Frontend kann einen Snapshot anfordern (z.B. nach Reconnect)
+  // Snapshot (z. B. nach Refresh)
   socket.on('request-state', ({ room }) => {
     const snap = getRoomSnapshot(room);
     if (snap) socket.emit('state-update', snap);
