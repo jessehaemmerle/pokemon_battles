@@ -22,6 +22,7 @@ const io = new Server(server, { cors: { origin: '*' } });
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
+  // Random PvP-Demo (Server generiert beide Teams)
   socket.on('join-random', async (data) => {
     try {
       const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);
@@ -32,6 +33,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Bot-Battle
   socket.on('start-bot-battle', async (data) => {
     try {
       const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);
@@ -42,7 +44,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // EINZUG-RUNDEN: genau 1 Aktion pro Runde
+  // Ein-Zug-Runden
   socket.on('lock-action', async (payload) => {
     try {
       await clientLockAction(io, socket, payload);
@@ -52,13 +54,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('request-state', ({ room }) => {
-    clientRequestSnapshot(io, socket, room);
-  });
+  socket.on('request-state', ({ room }) => clientRequestSnapshot(io, socket, room));
 
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-  });
+  socket.on('disconnect', () => console.log('Client disconnected:', socket.id));
 });
 
 const PORT = process.env.PORT || 3000;

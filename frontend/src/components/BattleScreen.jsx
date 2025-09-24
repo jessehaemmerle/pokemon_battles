@@ -1,5 +1,29 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { socket } from '../lib/socket';
+
+// --- Type chart (client copy for previews) ---
+const TYPE_CHART = {
+  normal:   { rock:0.5, ghost:0, steel:0.5 },
+  fire:     { fire:0.5, water:0.5, grass:2, ice:2, bug:2, rock:0.5, dragon:0.5, steel:2 },
+  water:    { fire:2, water:0.5, grass:0.5, ground:2, rock:2, dragon:0.5 },
+  electric: { water:2, electric:0.5, grass:0.5, ground:0, flying:2, dragon:0.5 },
+  grass:    { fire:0.5, water:2, grass:0.5, poison:0.5, ground:2, flying:0.5, bug:0.5, rock:2, dragon:0.5, steel:0.5 },
+  ice:      { fire:0.5, water:0.5, ice:0.5, ground:2, flying:2, dragon:2, grass:2, steel:0.5 },
+  fighting: { normal:2, ice:2, rock:2, dark:2, steel:2, poison:0.5, flying:0.5, psychic:0.5, bug:0.5, ghost:0, fairy:0.5 },
+  poison:   { grass:2, fairy:2, poison:0.5, ground:0.5, rock:0.5, ghost:0.5, steel:0 },
+  ground:   { fire:2, electric:2, poison:2, rock:2, steel:2, grass:0.5, bug:0.5, flying:0 },
+  flying:   { grass:2, fighting:2, bug:2, rock:0.5, electric:0.5, steel:0.5 },
+  psychic:  { fighting:2, poison:2, psychic:0.5, steel:0.5, dark:0 },
+  bug:      { grass:2, psychic:2, dark:2, fighting:0.5, fire:0.5, flying:0.5, ghost:0.5, steel:0.5, fairy:0.5, poison:0.5 },
+  rock:     { fire:2, ice:2, flying:2, bug:2, fighting:0.5, ground:0.5, steel:0.5 },
+  ghost:    { ghost:2, psychic:2, normal:0, dark:0.5 },
+  dragon:   { dragon:2, steel:0.5, fairy:0 },
+  dark:     { ghost:2, psychic:2, fighting:0.5, dark:0.5, fairy:0.5 },
+  steel:    { rock:2, ice:2, fairy:2, fire:0.5, water:0.5, electric:0.5, steel:0.5 },
+  fairy:    { fighting:2, dragon:2, dark:2, fire:0.5, poison:0.5, steel:0.5 }
+};
+const effMultiplier = (moveType, defTypes=[]) =>
+  defTypes.reduce((acc,t)=>acc*(TYPE_CHART[moveType]?.[t] ?? 1), 1);
 
 function hpFillNode(current, total) {
   const pct = Math.max(0, Math.round((current / total) * 100));
@@ -11,16 +35,22 @@ function hpFillNode(current, total) {
   );
 }
 
+function StatusPill({ type }) {
+  if (!type) return null;
+  const map = { burn: 'status-burn', paralysis: 'status-para', poison:'status-poison' };
+  const label = { burn: 'BRN', paralysis: 'PAR', poison: 'PSN' }[type] || type.toUpperCase();
+  return <span className={`status-pill ${map[type]}`}>{label}</span>;
+}
+
 export default function BattleScreen({ room, teams, onExit }) {
   const [state, setState] = useState({
     room, teams,
     active: { player1: 0, player2: 0 },
     over: false, winner: null,
-    phase: 'select',
-    turnOwner: 'player1'
+    phase: 'select', turnOwner: 'player1'
   });
 
-  // Animation flags
+  // Animations
   const [atkP1, setAtkP1] = useState(false);
   const [atkP2, setAtkP2] = useState(false);
   const [defP1, setDefP1] = useState(false);
@@ -29,8 +59,6 @@ export default function BattleScreen({ room, teams, onExit }) {
   const [lastLine, setLastLine] = useState('Ein Kampf beginnt!');
   const [log, setLog] = useState([]);
   const [showParty, setShowParty] = useState(false);
-
-  // End-Screen visibility & Stats
   const [showEnd, setShowEnd] = useState(false);
   const [stats, setStats] = useState({
     turns: 0,
@@ -47,7 +75,10 @@ export default function BattleScreen({ room, teams, onExit }) {
   const hpBox = (mon) => (
     <>
       <div className="info-row">
-        <div className="info-name">{mon.name}</div>
+        <div className="info-name">
+          {mon.name}
+          <StatusPill type={mon.status?.type} />
+        </div>
         <div className="info-lv">Lv{lv(mon)}</div>
       </div>
       <div className="info-row">
@@ -61,11 +92,9 @@ export default function BattleScreen({ room, teams, onExit }) {
     const onBattleStart = (p) => setState(s => ({ ...s, ...p }));
     const onState = (snap) => setState(s => ({ ...s, ...snap }));
     const onTurnState = (p) => setState(s => ({ ...s, ...p }));
-
     const onMessage = (m) => { setLastLine(m); setLog(prev => [...prev, m]); };
 
     const onMove = (d) => {
-      // animation cues
       if (d.side === 'player1') { setAtkP1(true); setTimeout(()=>setAtkP1(false), 460); setDefP2(true); setTimeout(()=>setDefP2(false), 460); }
       else { setAtkP2(true); setTimeout(()=>setAtkP2(false), 460); setDefP1(true); setTimeout(()=>setDefP1(false), 460); }
 
@@ -77,7 +106,6 @@ export default function BattleScreen({ room, teams, onExit }) {
       const line = `➡️ ${d.side} nutzt ${d.move} auf ${d.target}: ${d.damage} Schaden${effTxt}${critTxt}`;
       setLastLine(line); setLog(prev => [...prev, line]);
 
-      // stats
       setStats(prev => {
         const copy = structuredClone(prev);
         copy[d.side].damageDealt += d.damage;
@@ -86,35 +114,46 @@ export default function BattleScreen({ room, teams, onExit }) {
       });
     };
 
-    const onFainted = ({ target }) => {
-      // target hat ein Faint erlitten
+    const onMiss = ({ side, move }) => {
+      setLog(prev => [...prev, `😬 ${side} verfehlt mit ${move}.`]);
+    };
+
+    const onStatusApplied = ({ target, type }) => {
+      const tag = { burn: 'Burn', paralysis: 'Paralyse', poison: 'Gift' }[type] || type;
+      setLog(prev => [...prev, `✨ ${target} wurde mit ${tag} belegt!`]);
+    };
+
+    const onStatusTick = ({ side, type, damage }) => {
+      const tag = { burn: 'Burn', poison: 'Gift' }[type] || type;
+      setLog(prev => [...prev, `☠️ ${side} erleidet ${damage} Schaden durch ${tag}.`]);
+    };
+
+    const onFainted = ({ fainted, target }) => {
+      setLog(prev => [...prev, `💀 ${fainted} (${target}) wurde besiegt!`]);
       setStats(prev => {
         const copy = structuredClone(prev);
         copy[target].faints += 1;
         return copy;
       });
     };
-
-    const onSwitchOk = ({ side }) => {
+    const onSwitchOk = ({ side, toIndex }) => {
+      const mon = (state?.teams?.[side] ?? [])[toIndex]?.name || `Slot ${toIndex+1}`;
+      setLog(prev => [...prev, `🔄 ${side} wechselt zu ${mon}.`]);
       setStats(prev => {
         const copy = structuredClone(prev);
         copy[side].switches += 1;
         return copy;
       });
     };
-
     const onTurnEnd = () => {
       setStats(prev => ({ ...prev, turns: prev.turns + 1 }));
       setLog(prev => [...prev, '— Rundenende —']);
     };
-
     const onEnd = ({ winner }) => {
-      const line = `🏆 ${winner} gewinnt den Kampf!`;
-      setLastLine(line); setLog(prev => [...prev, line]);
+      setLastLine(`🏆 ${winner} gewinnt den Kampf!`);
       setState(s => ({ ...s, over: true, winner }));
       setShowEnd(true);
     };
-
     const onError = (msg) => setLog(prev => [...prev, `⚠️ Fehler: ${msg}`]);
 
     socket.on('battle-start', onBattleStart);
@@ -122,6 +161,9 @@ export default function BattleScreen({ room, teams, onExit }) {
     socket.on('turn-state', onTurnState);
     socket.on('message', onMessage);
     socket.on('move-made', onMove);
+    socket.on('move-missed', onMiss);
+    socket.on('status-applied', onStatusApplied);
+    socket.on('status-tick', onStatusTick);
     socket.on('pokemon-fainted', onFainted);
     socket.on('switch-ok', onSwitchOk);
     socket.on('turn-end', onTurnEnd);
@@ -136,6 +178,9 @@ export default function BattleScreen({ room, teams, onExit }) {
       socket.off('turn-state', onTurnState);
       socket.off('message', onMessage);
       socket.off('move-made', onMove);
+      socket.off('move-missed', onMiss);
+      socket.off('status-applied', onStatusApplied);
+      socket.off('status-tick', onStatusTick);
       socket.off('pokemon-fainted', onFainted);
       socket.off('switch-ok', onSwitchOk);
       socket.off('turn-end', onTurnEnd);
@@ -153,6 +198,23 @@ export default function BattleScreen({ room, teams, onExit }) {
 
   const myTurn = state.turnOwner === 'player1';
   const canClick = myTurn && state.phase === 'select' && !state.over;
+
+  // --- Move Preview (Effektivität + Accuracy + Priority) ---
+  const defTypes = state?.teams?.player2?.[state.active.player2]?.types ?? [];
+  const moveHints = useMemo(() => {
+    const hints = [];
+    (p1.moves || []).forEach((m, i) => {
+      const eff = effMultiplier(m.type, defTypes);
+      let effTag = null;
+      if (eff === 0) effTag = { cls: 'imm', label: 'Immun' };
+      else if (eff >= 2) effTag = { cls: 'se', label: 'Sehr effektiv' };
+      else if (eff <= 0.5) effTag = { cls: 'ne', label: 'Nicht sehr eff.' };
+      const acc = m.accuracy ?? 100;
+      const prio = m.priority ?? 0;
+      hints[i] = { effTag, acc, prio };
+    });
+    return hints;
+  }, [defTypes, p1.moves]);
 
   const lockMove = (idx) => {
     if (!canClick) return;
@@ -175,11 +237,7 @@ export default function BattleScreen({ room, teams, onExit }) {
         <div className="badge" style={{ background: myTurn ? '#111827' : '#6b7280' }}>
           {myTurn ? '🎯 Dein Zug' : '⌛ Gegner ist dran'}
         </div>
-        <div className="helper">
-          {myTurn
-            ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…')
-            : 'Bitte warten…'}
-        </div>
+        <div className="small">{myTurn ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…') : 'Bitte warten…'}</div>
       </div>
 
       {/* Stage */}
@@ -202,11 +260,19 @@ export default function BattleScreen({ room, teams, onExit }) {
         {/* Commands */}
         <div className="command">
           <div className="grid grid-2" style={{ marginBottom: 10 }}>
-            {p1.moves.map((m, i) => (
-              <button key={i} className="btn" onClick={() => lockMove(i)} disabled={!canClick} title={m.name}>
-                {m.name}
-              </button>
-            ))}
+            {p1.moves.map((m, i) => {
+              const hint = moveHints[i] || {};
+              return (
+                <button key={i} className="btn" onClick={() => lockMove(i)} disabled={!canClick} title={m.name}>
+                  <div style={{ fontWeight: 800 }}>{m.name}</div>
+                  <div className="move-meta">
+                    <span className="tag acc">{(m.accuracy ?? 100)}%</span>
+                    {hint.effTag && <span className={`tag ${hint.effTag.cls}`}>{hint.effTag.label}</span>}
+                    {m.priority ? <span className="tag pri">{m.priority > 0 ? `Prio +${m.priority}` : `Prio ${m.priority}`}</span> : <span style={{opacity:0.3}} />}
+                  </div>
+                </button>
+              );
+            })}
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap:'wrap' }}>
             <button className="btn secondary" onClick={() => setShowParty(v=>!v)} disabled={!canClick}>🔄 Pokémon wechseln</button>
@@ -242,7 +308,7 @@ export default function BattleScreen({ room, teams, onExit }) {
         </div>
       </div>
 
-      {/* ---------- End Screen Overlay ---------- */}
+      {/* End Screen Overlay bleibt wie gehabt – wird vom Backend-Event gesteuert */}
       {showEnd && (
         <div className="overlay" role="dialog" aria-modal="true">
           <div className="modal">
@@ -253,7 +319,6 @@ export default function BattleScreen({ room, teams, onExit }) {
             </div>
 
             <div className="modal-row">
-              {/* Left: Summary */}
               <div className="modal-card">
                 <div className="stat"><span>Runden</span><b>{stats.turns}</b></div>
                 <div className="stat"><span>Dein Schaden</span><b>{stats.player1.damageDealt}</b></div>
@@ -261,8 +326,6 @@ export default function BattleScreen({ room, teams, onExit }) {
                 <div className="stat"><span>Deine Wechsel</span><b>{stats.player1.switches}</b></div>
                 <div className="stat"><span>Deine KOs erlitten</span><b>{stats.player1.faints}</b></div>
               </div>
-
-              {/* Right: Opponent stats + team sprites */}
               <div className="modal-card">
                 <div className="stat"><span>Gegner-Schaden</span><b>{stats.player2.damageDealt}</b></div>
                 <div className="stat"><span>Gegner-Moves</span><b>{stats.player2.movesUsed}</b></div>
@@ -280,7 +343,7 @@ export default function BattleScreen({ room, teams, onExit }) {
 
             <div className="modal-actions">
               <button className="btn" onClick={() => window.location.reload()}>🔁 Neues Match</button>
-              <button className="btn secondary" onClick={onExit}>⬅️ Zurück</button>
+              <button className="btn secondary" onClick={onExit}>⬅️ Zur Auswahl</button>
             </div>
           </div>
         </div>
