@@ -1,7 +1,7 @@
 import io from 'socket.io-client';
 import { useState } from 'react';
 
-const socket = io('http://localhost:3000');
+const socket = io(import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000');
 
 export default function RandomBattle({ setBattleRoom }) {
   const [generation, setGeneration] = useState('1');
