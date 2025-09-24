@@ -20,6 +20,7 @@ export default function BattleScreen({ room, teams, onExit }) {
     turnOwner: 'player1'
   });
 
+  // Animation flags
   const [atkP1, setAtkP1] = useState(false);
   const [atkP2, setAtkP2] = useState(false);
   const [defP1, setDefP1] = useState(false);
@@ -28,6 +29,15 @@ export default function BattleScreen({ room, teams, onExit }) {
   const [lastLine, setLastLine] = useState('Ein Kampf beginnt!');
   const [log, setLog] = useState([]);
   const [showParty, setShowParty] = useState(false);
+
+  // End-Screen visibility & Stats
+  const [showEnd, setShowEnd] = useState(false);
+  const [stats, setStats] = useState({
+    turns: 0,
+    player1: { damageDealt: 0, movesUsed: 0, switches: 0, faints: 0 },
+    player2: { damageDealt: 0, movesUsed: 0, switches: 0, faints: 0 }
+  });
+
   const logRef = useRef(null);
 
   const p1 = state?.teams?.player1?.[state.active.player1];
@@ -55,6 +65,7 @@ export default function BattleScreen({ room, teams, onExit }) {
     const onMessage = (m) => { setLastLine(m); setLog(prev => [...prev, m]); };
 
     const onMove = (d) => {
+      // animation cues
       if (d.side === 'player1') { setAtkP1(true); setTimeout(()=>setAtkP1(false), 460); setDefP2(true); setTimeout(()=>setDefP2(false), 460); }
       else { setAtkP2(true); setTimeout(()=>setAtkP2(false), 460); setDefP1(true); setTimeout(()=>setDefP1(false), 460); }
 
@@ -65,22 +76,45 @@ export default function BattleScreen({ room, teams, onExit }) {
       const critTxt = d.crit ? ' ✨Krit!' : '';
       const line = `➡️ ${d.side} nutzt ${d.move} auf ${d.target}: ${d.damage} Schaden${effTxt}${critTxt}`;
       setLastLine(line); setLog(prev => [...prev, line]);
+
+      // stats
+      setStats(prev => {
+        const copy = structuredClone(prev);
+        copy[d.side].damageDealt += d.damage;
+        copy[d.side].movesUsed += 1;
+        return copy;
+      });
     };
 
-    const onFainted = ({ fainted, target }) => {
-      const line = `💀 ${fainted} (${target}) wurde besiegt!`;
-      setLastLine(line); setLog(prev => [...prev, line]);
+    const onFainted = ({ target }) => {
+      // target hat ein Faint erlitten
+      setStats(prev => {
+        const copy = structuredClone(prev);
+        copy[target].faints += 1;
+        return copy;
+      });
     };
-    const onSwitchOk = ({ side, toIndex }) => {
-      const mon = (state?.teams?.[side] ?? [])[toIndex]?.name || `Slot ${toIndex+1}`;
-      const line = `🔄 ${side} wechselt zu ${mon}.`;
-      setLastLine(line); setLog(prev => [...prev, line]);
+
+    const onSwitchOk = ({ side }) => {
+      setStats(prev => {
+        const copy = structuredClone(prev);
+        copy[side].switches += 1;
+        return copy;
+      });
     };
-    const onTurnEnd = () => setLog(prev => [...prev, '— Rundenende —']);
+
+    const onTurnEnd = () => {
+      setStats(prev => ({ ...prev, turns: prev.turns + 1 }));
+      setLog(prev => [...prev, '— Rundenende —']);
+    };
+
     const onEnd = ({ winner }) => {
       const line = `🏆 ${winner} gewinnt den Kampf!`;
       setLastLine(line); setLog(prev => [...prev, line]);
+      setState(s => ({ ...s, over: true, winner }));
+      setShowEnd(true);
     };
+
     const onError = (msg) => setLog(prev => [...prev, `⚠️ Fehler: ${msg}`]);
 
     socket.on('battle-start', onBattleStart);
@@ -155,15 +189,10 @@ export default function BattleScreen({ room, teams, onExit }) {
         <div className="platform enemy" />
         <div className="platform player" />
 
-        <div className="info-box info-top">
-          <div className="info-row"><div className="info-name">{p2.name}</div><div className="info-lv">Lv{Math.max(1, Math.round(p2.stats.speed/10))}</div></div>
-          <div className="info-row">{hpFillNode(p2.currentHp, p2.stats.hp)}<div className="small">{p2.currentHp}/{p2.stats.hp}</div></div>
-        </div>
-        <div className="info-box info-bottom">
-          <div className="info-row"><div className="info-name">{p1.name}</div><div className="info-lv">Lv{Math.max(1, Math.round(p1.stats.speed/10))}</div></div>
-          <div className="info-row">{hpFillNode(p1.currentHp, p1.stats.hp)}<div className="small">{p1.currentHp}/{p1.stats.hp}</div></div>
-        </div>
+        <div className="info-box info-top">{hpBox(p2)}</div>
+        <div className="info-box info-bottom">{hpBox(p1)}</div>
 
+        {/* Sprites + animations */}
         <img className={`sprite enemy ${atkP2 ? 'attack-left' : ''} ${defP2 ? 'defend-shake' : ''}`} src={p2.sprite} alt={p2.name}/>
         <img className={`sprite player ${atkP1 ? 'attack-right' : ''} ${defP1 ? 'defend-shake' : ''}`} src={p1.sprite} alt={p1.name}/>
       </div>
@@ -212,6 +241,50 @@ export default function BattleScreen({ room, teams, onExit }) {
           </div>
         </div>
       </div>
+
+      {/* ---------- End Screen Overlay ---------- */}
+      {showEnd && (
+        <div className="overlay" role="dialog" aria-modal="true">
+          <div className="modal">
+            <div className="modal-header">
+              <span className="trophy" aria-hidden />
+              <span>{state.winner === 'player1' ? '🎉 Sieg!' : '😤 Niederlage'}</span>
+              <span className="trophy" aria-hidden />
+            </div>
+
+            <div className="modal-row">
+              {/* Left: Summary */}
+              <div className="modal-card">
+                <div className="stat"><span>Runden</span><b>{stats.turns}</b></div>
+                <div className="stat"><span>Dein Schaden</span><b>{stats.player1.damageDealt}</b></div>
+                <div className="stat"><span>Deine Moves</span><b>{stats.player1.movesUsed}</b></div>
+                <div className="stat"><span>Deine Wechsel</span><b>{stats.player1.switches}</b></div>
+                <div className="stat"><span>Deine KOs erlitten</span><b>{stats.player1.faints}</b></div>
+              </div>
+
+              {/* Right: Opponent stats + team sprites */}
+              <div className="modal-card">
+                <div className="stat"><span>Gegner-Schaden</span><b>{stats.player2.damageDealt}</b></div>
+                <div className="stat"><span>Gegner-Moves</span><b>{stats.player2.movesUsed}</b></div>
+                <div className="stat"><span>Gegner-Wechsel</span><b>{stats.player2.switches}</b></div>
+                <div className="stat"><span>Gegner KOs erlitten</span><b>{stats.player2.faints}</b></div>
+                <div style={{ marginTop: 10 }} className="small">Teams</div>
+                <div className="team-sprites" style={{ marginTop: 6 }}>
+                  {state.teams.player1.map(p => <img key={`p1-${p.id}`} src={p.sprite} alt={p.name} />)}
+                </div>
+                <div className="team-sprites" style={{ marginTop: 6 }}>
+                  {state.teams.player2.map(p => <img key={`p2-${p.id}`} src={p.sprite} alt={p.name} />)}
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-actions">
+              <button className="btn" onClick={() => window.location.reload()}>🔁 Neues Match</button>
+              <button className="btn secondary" onClick={onExit}>⬅️ Zurück</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
