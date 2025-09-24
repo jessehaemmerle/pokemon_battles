@@ -39,16 +39,17 @@ function StatusPill({ type }) {
   if (!type) return null;
   const map = {
     burn: 'status-burn', paralysis: 'status-para', poison:'status-poison',
-    sleep: 'status-sleep', freeze: 'status-freeze'
+    sleep: 'status-sleep', freeze: 'status-freeze', toxic:'status-poison'
   };
   const titleMap = {
     burn: 'Burn: 6.25% Schaden am Rundenende, physischer Angriff halbiert',
     poison: 'Gift: 12.5% Schaden am Rundenende',
     paralysis: 'Paralyse: 25% Ausfallchance',
     sleep: 'Schlaf: 1–3 Züge handlungsunfähig',
-    freeze: 'Freeze: blockiert, 20% Auftauchance pro Zug'
+    freeze: 'Freeze: blockiert, 20% Auftauchance pro Zug',
+    toxic: 'Toxic: stapelnder Giftschaden (1/16 → n/16)'
   };
-  const label = { burn:'BRN', paralysis:'PAR', poison:'PSN', sleep:'SLP', freeze:'FRZ' }[type] || type.toUpperCase();
+  const label = { burn:'BRN', paralysis:'PAR', poison:'PSN', sleep:'SLP', freeze:'FRZ', toxic:'TXC' }[type] || type.toUpperCase();
   return <span className={`status-pill ${map[type]}`} title={titleMap[type]}>{label}</span>;
 }
 
@@ -56,8 +57,14 @@ function ItemPill({ item }) {
   if (!item) return null;
   const title = item === 'leftovers'
     ? 'Leftovers: heilt 1/16 KP am Rundenende'
-    : 'Choice Scarf: Speed↑, auf den ersten Move gelockt bis zum Wechsel';
-  const label = item === 'leftovers' ? 'Leftovers' : 'Choice Scarf';
+    : item === 'choice-scarf'
+      ? 'Choice Scarf: Speed↑, auf den ersten Move gelockt bis zum Wechsel'
+      : item === 'focus-sash'
+        ? 'Focus Sash: überlebt einen potentiellen OHKO mit 1 KP'
+        : item === 'life-orb'
+          ? 'Life Orb: +30% Schaden, 10% Rückstoß'
+          : item;
+  const label = item?.split('-').map(s=>s[0].toUpperCase()+s.slice(1)).join(' ');
   return <span className="item-pill" title={title}>{label}</span>;
 }
 
@@ -67,8 +74,9 @@ export default function BattleScreen({ room, teams, onExit }) {
     active: { player1: 0, player2: 0 },
     over: false, winner: null,
     phase: 'select', turnOwner: 'player1',
-    // NEU: Field-Info für Weather/Terrain (für Badges)
-    field: { weather: { type: null, turns: 0 }, terrain: { type: null, turns: 0 } }
+    // Field + Timer für Badges/Countdown
+    field: { weather: { type: null, turns: 0 }, terrain: { type: null, turns: 0 } },
+    timer: { seconds: 60 }
   });
 
   // Animations
@@ -81,6 +89,7 @@ export default function BattleScreen({ room, teams, onExit }) {
   const [log, setLog] = useState([]);
   const [showParty, setShowParty] = useState(false);
   const [showEnd, setShowEnd] = useState(false);
+  const [replayId, setReplayId] = useState(null);
   const [stats, setStats] = useState({
     turns: 0,
     player1: { damageDealt: 0, movesUsed: 0, switches: 0, faints: 0 },
@@ -139,12 +148,12 @@ export default function BattleScreen({ room, teams, onExit }) {
     const onMiss = ({ side, move }) => setLog(prev => [...prev, `😬 ${side} verfehlt mit ${move}.`]);
 
     const onStatusApplied = ({ target, type }) => {
-      const tag = { burn: 'Burn', paralysis: 'Paralyse', poison: 'Gift', sleep:'Schlaf', freeze:'Freeze' }[type] || type;
+      const tag = { burn: 'Burn', paralysis: 'Paralyse', poison: 'Gift', sleep:'Schlaf', freeze:'Freeze', toxic:'Toxic' }[type] || type;
       setLog(prev => [...prev, `✨ ${target} wurde mit ${tag} belegt!`]);
     };
 
     const onStatusTick = ({ side, type, damage }) => {
-      const tag = { burn: 'Burn', poison: 'Gift', toxic:'Toxin' }[type] || type;
+      const tag = { burn: 'Burn', poison: 'Gift', toxic:'Toxic' }[type] || type;
       setLog(prev => [...prev, `☠️ ${side} erleidet ${damage} Schaden durch ${tag}.`]);
     };
 
@@ -153,14 +162,13 @@ export default function BattleScreen({ room, teams, onExit }) {
       setLog(prev => [...prev, `🧼 ${target} ${msg}`]);
     };
 
-    // robust gegen { heal } oder { amount }
+    // robust für { heal } oder { amount }
     const onItemHeal = (payload) => {
       const { side, item } = payload || {};
       const amount = payload?.amount ?? payload?.heal ?? 0;
       if (item === 'leftovers') setLog(prev => [...prev, `🍽️ ${side} heilt ${amount} KP durch Leftovers.`]);
     };
 
-    // nur fürs Log, beeinflusst UI nicht
     const onWeatherChip = ({ side, type, damage }) => {
       setLog(prev => [...prev, `🌪️ ${side} erleidet ${damage} Schaden durch ${type}.`]);
     };
@@ -186,12 +194,17 @@ export default function BattleScreen({ room, teams, onExit }) {
       setStats(prev => ({ ...prev, turns: prev.turns + 1 }));
       setLog(prev => [...prev, '— Rundenende —']);
     };
-    const onEnd = ({ winner }) => {
+    const onEnd = ({ winner, replayId: rid }) => {
       setLastLine(`🏆 ${winner} gewinnt den Kampf!`);
+      setReplayId(rid || null);
       setState(s => ({ ...s, over: true, winner }));
       setShowEnd(true);
     };
     const onError = (msg) => setLog(prev => [...prev, `⚠️ Fehler: ${msg}`]);
+
+    const onTimer = ({ seconds, turnOwner }) => {
+      setState(s => ({ ...s, timer: { seconds }, turnOwner: turnOwner ?? s.turnOwner }));
+    };
 
     socket.on('battle-start', onBattleStart);
     socket.on('state-update', onState);
@@ -209,6 +222,7 @@ export default function BattleScreen({ room, teams, onExit }) {
     socket.on('turn-end', onTurnEnd);
     socket.on('battle-end', onEnd);
     socket.on('error-message', onError);
+    socket.on('timer', onTimer);
 
     socket.emit('request-state', { room });
 
@@ -229,6 +243,7 @@ export default function BattleScreen({ room, teams, onExit }) {
       socket.off('turn-end', onTurnEnd);
       socket.off('battle-end', onEnd);
       socket.off('error-message', onError);
+      socket.off('timer', onTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room]);
@@ -242,7 +257,7 @@ export default function BattleScreen({ room, teams, onExit }) {
   const myTurn = state.turnOwner === 'player1';
   const canClick = myTurn && state.phase === 'select' && !state.over;
 
-  // --- Move Preview (Effektivität + Accuracy + Priority + Choice-Lock) ---
+  // --- Move Preview (Effektivität + Accuracy + Priority + Choice-Lock + PP) ---
   const defTypes = state?.teams?.player2?.[state.active.player2]?.types ?? [];
   const choiceLock = p1?.choiceLock || null;
   const moveHints = useMemo(() => {
@@ -256,7 +271,11 @@ export default function BattleScreen({ room, teams, onExit }) {
       const acc = m.accuracy ?? 100;
       const prio = m.priority ?? 0;
       const locked = choiceLock && choiceLock !== m.name;
-      hints[i] = { effTag, acc, prio, locked };
+      const remaining = m.currentPP ?? m.pp ?? 0;
+      const total = m.pp ?? '?';
+      const pp = `${Math.max(0, remaining)}/${total}`;
+      const out = remaining <= 0;
+      hints[i] = { effTag, acc, prio, locked, pp, out };
     });
     return hints;
   }, [defTypes, p1.moves, choiceLock]);
@@ -264,7 +283,9 @@ export default function BattleScreen({ room, teams, onExit }) {
   const lockMove = (idx) => {
     if (!canClick) return;
     const m = p1.moves[idx];
-    if (choiceLock && choiceLock !== m.name) return; // Hard block client-side
+    const out = (m.currentPP ?? m.pp ?? 0) <= 0;
+    if (out) return; // Keine PP
+    if (choiceLock && choiceLock !== m.name) return; // Choice-Lock
     socket.emit('lock-action', { room, side: 'player1', type: 'move', index: idx });
   };
   const canSwitchTo = (idx) => {
@@ -274,11 +295,10 @@ export default function BattleScreen({ room, teams, onExit }) {
   const lockSwitch = (idx) => {
     if (!canClick) return;
     socket.emit('lock-action', { room, side: 'player1', type: 'switch', index: idx });
-    // Choice-Lock entfernt sich serverseitig beim Switch; der Snapshot aktualisiert den Client
     setShowParty(false);
   };
 
-  // NEU: Weather-/Terrain-Badges (inkl. Restlaufzeit)
+  // Weather-/Terrain-Badges (inkl. Restlaufzeit)
   const weatherLabel = state.field?.weather?.type ? (
     { rain:'🌧️ Regen', sun:'☀️ Sonne', sand:'🌪️ Sandsturm', hail:'🌨️ Hagel' }[state.field.weather.type]
   ) : null;
@@ -288,14 +308,20 @@ export default function BattleScreen({ room, teams, onExit }) {
   const weatherTurns = state.field?.weather?.turns || 0;
   const terrainTurns = state.field?.terrain?.turns || 0;
 
+  const forfeit = () => socket.emit('forfeit', { room, side: 'player1' });
+  const rematch = () => socket.emit('rematch', { room });
+
   return (
     <div className="container">
-      {/* Turn badge + Field Badges */}
+      {/* Turn badge + Field Badges + Timer + Choice-Lock-Info + Quick Actions */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 8 }}>
-        <div className="badge" style={{ background: myTurn ? '#111827' : '#6b7280' }}>
-          {myTurn ? '🎯 Dein Zug' : '⌛ Gegner ist dran'}
-        </div>
         <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <div className="badge" style={{ background: myTurn ? '#111827' : '#6b7280' }}>
+            {myTurn ? '🎯 Dein Zug' : '⌛ Gegner ist dran'}
+          </div>
+          <div className="badge" title="Runden-Timer" style={{ background:'#0f172a' }}>
+            ⏱️ {state.timer?.seconds ?? 60}s
+          </div>
           {weatherLabel && (
             <div className="badge" style={{ background:'#0f172a' }}>
               {weatherLabel}{weatherTurns ? ` (${weatherTurns})` : ''}
@@ -307,8 +333,15 @@ export default function BattleScreen({ room, teams, onExit }) {
             </div>
           )}
           <div className="small">
-            {choiceLock ? `Choice-Lock: ${choiceLock}` : (myTurn ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…') : 'Bitte warten…')}
+            {p1?.choiceLock
+              ? `Choice-Lock: ${p1.choiceLock}`
+              : (myTurn ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…') : 'Bitte warten…')}
           </div>
+        </div>
+        <div style={{ display:'flex', gap:8 }}>
+          <button className="btn ghost" onClick={forfeit} disabled={state.over}>🏳️ Aufgabe</button>
+          <button className="btn" onClick={rematch}>🔁 Rematch</button>
+          <button className="btn" onClick={onExit}>⬅️ Zurück</button>
         </div>
       </div>
 
@@ -339,15 +372,19 @@ export default function BattleScreen({ room, teams, onExit }) {
                   key={i}
                   className="btn"
                   onClick={() => lockMove(i)}
-                  disabled={!canClick || !!hint.locked}
+                  disabled={!canClick || !!hint.locked || !!hint.out}
                   title={m.name}
                 >
-                  <div style={{ fontWeight: 800 }}>{m.name}</div>
+                  <div style={{ fontWeight: 800, display:'flex', justifyContent:'space-between' }}>
+                    <span>{m.name}</span>
+                    <span className="tag acc">PP {hint.pp}</span>
+                  </div>
                   <div className="move-meta">
                     <span className="tag acc">{(m.accuracy ?? 100)}%</span>
                     {hint.effTag && <span className={`tag ${hint.effTag.cls}`}>{hint.effTag.label}</span>}
                     {m.priority ? <span className="tag pri">{m.priority > 0 ? `Prio +${m.priority}` : `Prio ${m.priority}`}</span> : <span style={{opacity:0.3}} />}
                     {hint.locked && <span className="tag lock">Lock</span>}
+                    {hint.out && <span className="tag" style={{ background:'#fee2e2', color:'#991b1b' }}>Keine PP</span>}
                   </div>
                 </button>
               );
@@ -356,7 +393,6 @@ export default function BattleScreen({ room, teams, onExit }) {
           <div style={{ display: 'flex', gap: 8, flexWrap:'wrap' }}>
             <button className="btn secondary" onClick={() => setShowParty(v=>!v)} disabled={!canClick}>🔄 Pokémon wechseln</button>
             <button className="btn ghost" onClick={() => window.location.reload()}>🔁 Neues Match</button>
-            <button className="btn" onClick={onExit}>⬅️ Zurück</button>
           </div>
 
           {showParty && (
@@ -383,11 +419,12 @@ export default function BattleScreen({ room, teams, onExit }) {
           <div className="small" style={{ marginTop: 8, opacity: .7 }}>Battle-Log</div>
           <div className="log" ref={logRef}>
             {log.map((l, i) => <div key={i}>{l}</div>)}
+            {replayId && <div style={{ marginTop: 8 }} className="small">Replay-ID: <b>{replayId}</b> (GET /replays/{replayId})</div>}
           </div>
         </div>
       </div>
 
-      {/* End Screen Overlay (wie zuvor) */}
+      {/* End Screen Overlay (unverändert + Rematch) */}
       {showEnd && (
         <div className="overlay" role="dialog" aria-modal="true">
           <div className="modal">
@@ -421,7 +458,7 @@ export default function BattleScreen({ room, teams, onExit }) {
             </div>
 
             <div className="modal-actions">
-              <button className="btn" onClick={() => window.location.reload()}>🔁 Neues Match</button>
+              <button className="btn" onClick={rematch}>🔁 Rematch</button>
               <button className="btn secondary" onClick={onExit}>⬅️ Zur Auswahl</button>
             </div>
           </div>
