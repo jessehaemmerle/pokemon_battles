@@ -78,6 +78,13 @@ html, body, #root { height: 100%; margin: 0; color: var(--ink); font-family: Int
 .badge { display: inline-flex; align-items: center; gap: 8px; background: var(--brand); color: #fff; border-radius: 999px; padding: 6px 10px; font-weight: 800; letter-spacing: .3px; }
 .helper { opacity: .75; font-size: 13px; }
 
+/* Special badge colors (mobile turn/timer/field) */
+.badge-turn { background:#111827; }
+.badge-wait { background:#6b7280; }
+.badge-timer { background:#0f172a; }
+.badge-field { background:#0f172a; }
+.badge-terrain { background:#065f46; }
+
 /* ------ Skeleton for Suspense fallbacks ------ */
 .skel { border-radius: 12px; background: linear-gradient(90deg, rgba(255,255,255,.02), rgba(0,0,0,.06), rgba(255,255,255,.02)); height: 140px; animation: shimmer 1.2s linear infinite; }
 @keyframes shimmer { 0% { background-position:-200% 0 } 100% { background-position:200% 0 } }
@@ -109,8 +116,12 @@ html, body, #root { height: 100%; margin: 0; color: var(--ink); font-family: Int
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 .tag { padding:2px 6px; border-radius:8px; font-weight:800; }
 
+/* Move button layout tweaks */
+.btn-move .move-title { font-weight: 800; display:flex; justify-content:space-between; }
+.move-meta { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:6px; }
+
 /* ------ Battle Stage (kept, retuned colors) ------ */
-.battle-stage { position: relative; aspect-ratio: 16/9; width: 100%; background: radial-gradient(ellipse at 50% 10%, rgba(255,255,255,0.08), rgba(255,255,255,0) 40%), linear-gradient(180deg, #9fd5ff 0%, #d5f3ff 45%, #cbeed6 100%); border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.15); }
+.battle-stage { position: relative; aspect-ratio: 16/9; width: 100%; background: radial-gradient(ellipse at 50% 10%, rgba(255,255,255,0.08), rgba(255,255,255,0) 40%), linear-gradient(180deg, #9fd5ff 0%, #d5f3ff 45%, #cbeed6 100%); border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.15); touch-action: pan-y; }
 :root[data-theme="dark"] .battle-stage { background: linear-gradient(180deg, #111a3a, #0c162f 45%, #0b2220 100%); }
 .stage-layer { position: absolute; inset: 0; }
 .stage-sky { background: transparent; }
@@ -154,6 +165,7 @@ html, body, #root { height: 100%; margin: 0; color: var(--ink); font-family: Int
 
 .party { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
 .party-item { background: var(--bg-muted); border: 2px solid var(--brand); border-radius: 10px; padding: 8px; text-align: center; }
+.party-item.is-active { outline: 3px dashed color-mix(in oklab, var(--brand) 60%, #0000); }
 .party-name { font-weight: 700; margin-top: 4px; }
 .small { font-size: 12px; opacity: .8; }
 .log { background: var(--dialog); border: 3px solid var(--dialog-border); border-radius: 14px; padding: 10px 12px; height: 140px; overflow-y: auto; font-family: ui-monospace, Menlo, Consolas, monospace; }
@@ -208,6 +220,16 @@ html, body, #root { height: 100%; margin: 0; color: var(--ink); font-family: Int
   .sprite { width: 124px; }
   .hpbar { width: 140px; }
   .tabs { flex-wrap: wrap; }
+
+  /* Bigger touch targets */
+  .btn { padding: 14px 14px; font-size: 16px; }
+  .btn.btn-switch { padding: 12px 14px; }
+  .party { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .grid-moves { grid-template-columns: 1fr !important; } /* Moves 1-spaltig */
+  .row-compact { gap: 6px; flex-wrap: wrap; }
+
+  /* Keep commands visible / reachable */
+  .mobile-stick { position: sticky; bottom: 8px; z-index: 5; border-radius: 14px; }
 }
 
 /* === Type chips — Showdown palette === */

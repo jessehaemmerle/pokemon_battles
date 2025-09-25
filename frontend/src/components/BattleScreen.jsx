@@ -308,24 +308,80 @@ export default function BattleScreen({ room, teams, onExit }) {
   const forfeit = () => socket.emit('forfeit', { room, side: 'player1' });
   const rematch = () => socket.emit('rematch', { room });
 
+  // ------------------ Touch Gesten (Mobile) ------------------
+  const touch = useRef({ x: 0, y: 0, t: 0, active: false });
+  const SWIPE_MIN = 60; // Pixel
+  const selectNextAlive = (dir = 1) => {
+    const team = state.teams.player1;
+    const cur = state.active.player1;
+    const n = team.length;
+    for (let step = 1; step < n + 1; step++) {
+      const i = (cur + dir * step + n) % n;
+      if (canSwitchTo(i)) return i;
+    }
+    return null;
+  };
+
+  const handleTouchStart = (e) => {
+    const t = e.changedTouches?.[0];
+    if (!t) return;
+    touch.current = { x: t.clientX, y: t.clientY, t: Date.now(), active: true };
+  };
+  const handleTouchEnd = (e) => {
+    if (!touch.current.active) return;
+    const t = e.changedTouches?.[0]; if (!t) return;
+    const dx = t.clientX - touch.current.x;
+    const dy = t.clientY - touch.current.y;
+    touch.current.active = false;
+
+    const ax = Math.abs(dx), ay = Math.abs(dy);
+    if (ax < SWIPE_MIN && ay < SWIPE_MIN) return;
+
+    // Vertikal: Menü ein/aus
+    if (ay > ax) {
+      if (dy < -SWIPE_MIN) {
+        setShowParty(true);
+        setLastLine('🔄 Wechselmenü geöffnet (Wisch nach oben).');
+        return;
+      }
+      if (dy > SWIPE_MIN) {
+        setShowParty(false);
+        setLastLine('⬇️ Wechselmenü geschlossen.');
+        return;
+      }
+    }
+
+    // Horizontal: navigiere/wechsel direkt
+    const dir = dx < 0 ? +1 : -1; // links → +1 (nach vorne), rechts → -1 (zurück)
+    const next = selectNextAlive(dir);
+    if (next == null) return;
+
+    // Wenn Menü zu ist, öffnen + sofort wechseln (flott auf Mobile)
+    if (!showParty) setShowParty(true);
+    // Sofortiger Wechsel (falls erlaubt)
+    if (canClick) {
+      lockSwitch(next);
+    }
+  };
+
   return (
     <div className="container">
       {/* Turn badge + Field Badges + Timer + Choice-Lock-Info + Quick Actions */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 8 }}>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          <div className="badge" style={{ background: myTurn ? '#111827' : '#6b7280' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 8, flexWrap:'wrap', gap:8 }}>
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          <div className={`badge ${myTurn ? 'badge-turn' : 'badge-wait'}`}>
             {myTurn ? '🎯 Dein Zug' : '⌛ Gegner ist dran'}
           </div>
-          <div className="badge" title="Runden-Timer" style={{ background:'#0f172a' }}>
+          <div className="badge badge-timer" title="Runden-Timer">
             ⏱️ {state.timer?.seconds ?? 60}s
           </div>
           {weatherLabel && (
-            <div className="badge" style={{ background:'#0f172a' }}>
+            <div className="badge badge-field">
               {weatherLabel}{weatherTurns ? ` (${weatherTurns})` : ''}
             </div>
           )}
           {terrainLabel && (
-            <div className="badge" style={{ background:'#065f46' }}>
+            <div className="badge badge-terrain">
               {terrainLabel}{terrainTurns ? ` (${terrainTurns})` : ''}
             </div>
           )}
@@ -335,15 +391,19 @@ export default function BattleScreen({ room, teams, onExit }) {
               : (myTurn ? (state.phase==='select' ? 'Wähle Attacke oder Wechsel.' : 'Aktion läuft…') : 'Bitte warten…')}
           </div>
         </div>
-        <div style={{ display:'flex', gap:8 }}>
+        <div className="row row-compact">
           <button className="btn ghost" onClick={forfeit} disabled={state.over} aria-label="Aufgeben">🏳️ Aufgabe</button>
           <button className="btn" onClick={rematch} aria-label="Rematch starten">🔁 Rematch</button>
           <button className="btn" onClick={onExit} aria-label="Zurück">⬅️ Zurück</button>
         </div>
       </div>
 
-      {/* Stage */}
-      <div className="battle-stage">
+      {/* Stage (mit Touch-Gesten) */}
+      <div
+        className="battle-stage"
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+      >
         <div className="stage-layer stage-sky" />
         <div className="stage-layer stage-ground" />
         <div className="platform enemy" />
@@ -360,19 +420,19 @@ export default function BattleScreen({ room, teams, onExit }) {
       {/* UI */}
       <div className="ui-area">
         {/* Commands */}
-        <div className="command">
-          <div className="grid grid-2" style={{ marginBottom: 10 }}>
+        <div className="command mobile-stick">
+          <div className="grid grid-2 grid-moves" style={{ marginBottom: 10 }}>
             {p1.moves.map((m, i) => {
               const hint = moveHints[i] || {};
               return (
                 <button
                   key={i}
-                  className="btn"
+                  className="btn btn-move"
                   onClick={() => lockMove(i)}
                   disabled={!canClick || !!hint.locked || !!hint.out}
                   title={m.name}
                 >
-                  <div style={{ fontWeight: 800, display:'flex', justifyContent:'space-between' }}>
+                  <div className="move-title">
                     <span>{m.name}</span>
                     <span className="tag acc">PP {hint.pp}</span>
                   </div>
@@ -387,7 +447,7 @@ export default function BattleScreen({ room, teams, onExit }) {
               );
             })}
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap:'wrap' }}>
+          <div className="row row-compact">
             <button className="btn secondary" onClick={() => setShowParty(v=>!v)} disabled={!canClick} aria-label="Pokémon wechseln">🔄 Pokémon wechseln</button>
             <button className="btn ghost" onClick={() => window.location.reload()} aria-label="Neues Match">🔁 Neues Match</button>
           </div>
@@ -396,15 +456,18 @@ export default function BattleScreen({ room, teams, onExit }) {
             <div style={{ marginTop: 10 }}>
               <div className="party">
                 {state.teams.player1.map((mon, i) => (
-                  <div key={mon.id} className="party-item">
+                  <div key={mon.id} className={`party-item ${i===state.active.player1?'is-active':''}`}>
                     <img src={mon.sprite} alt={mon.name} style={{ width: 72, imageRendering: 'pixelated' }} />
                     <div className="party-name">{i+1}. {mon.name}</div>
                     <div className="small">{mon.currentHp}/{mon.stats.hp} HP</div>
-                    <button className="btn" style={{ marginTop: 6 }} disabled={!canSwitchTo(i) || !canClick} onClick={() => lockSwitch(i)}>
+                    <button className="btn btn-switch" style={{ marginTop: 6 }} disabled={!canSwitchTo(i) || !canClick} onClick={() => lockSwitch(i)}>
                       Wechseln
                     </button>
                   </div>
                 ))}
+              </div>
+              <div className="small" style={{ marginTop: 6, opacity:.7 }}>
+                Tipp: Auf dem Feld <b>hoch</b> wischen zum Öffnen, <b>runter</b> wischen zum Schließen. Links/Rechts wischt direkt zum nächsten/vorigen Pokémon.
               </div>
             </div>
           )}
@@ -443,7 +506,6 @@ export default function BattleScreen({ room, teams, onExit }) {
                 <div className="stat"><span>Gegner-Schaden</span><b>{stats.player2.damageDealt}</b></div>
                 <div className="stat"><span>Gegner-Moves</span><b>{stats.player2.movesUsed}</b></div>
                 <div className="stat"><span>Gegner-Wechsel</span><b>{stats.player2.switches}</b></div>
-                <div className="stat"><span>Gegner KOs erlitten</span><b>{stats.player2.faints}</b></div>
                 <div style={{ marginTop: 10 }} className="small">Teams</div>
                 <div className="team-sprites" style={{ marginTop: 6 }}>
                   {state.teams.player1.map(p => <img key={`p1-${p.id}`} src={p.sprite} alt={p.name} />)}
