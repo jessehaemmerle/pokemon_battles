@@ -4,6 +4,20 @@ import { socket } from '../lib/socket';
 // --- Type chart moved to shared ---
 import { TYPE_CHART } from '../shared/typeChart.js'
 
+// (new) helper to render type chips
+function TypeRow({ types=[] }) {
+  if (!types.length) return null;
+  return (
+    <div className="type-row" aria-label="Pokémon-Typen">
+      {types.map(t => (
+        <span key={t} className={`type-chip type-${t}`} title={t}>
+          {t[0].toUpperCase()+t.slice(1)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 const effMultiplier = (moveType, defTypes=[]) =>
   defTypes.reduce((acc,t)=>acc*(TYPE_CHART[moveType]?.[t] ?? 1), 1);
 
@@ -85,20 +99,21 @@ export default function BattleScreen({ room, teams, onExit }) {
 
   const lv = (mon) => Math.max(1, Math.round(mon.stats.speed / 10));
   const hpBox = (mon) => (
-    <>
-      <div className="info-row">
-        <div className="info-name">
-          {mon.name}
-          <StatusPill type={mon.status?.type} />
-          <ItemPill item={mon.item} />
-        </div>
-        <div className="info-lv">Lv{lv(mon)}</div>
+  <>
+    <div className="info-row">
+      <div className="info-name">
+        {mon.name}
+        <StatusPill type={mon.status?.type} />
+        <ItemPill item={mon.item} />
       </div>
-      <div className="info-row">
-        {hpFillNode(mon.currentHp, mon.stats.hp)}
-        <div className="small">{mon.currentHp}/{mon.stats.hp}</div>
-      </div>
-    </>
+      <div className="info-lv">Lv{lv(mon)}</div>
+    </div>
+    <TypeRow types={mon.types || []} />
+    <div className="info-row">
+      {hpFillNode(mon.currentHp, mon.stats.hp)}
+      <div className="small">{mon.currentHp}/{mon.stats.hp}</div>
+    </div>
+  </>
   );
 
   useEffect(() => {
@@ -321,9 +336,9 @@ export default function BattleScreen({ room, teams, onExit }) {
           </div>
         </div>
         <div style={{ display:'flex', gap:8 }}>
-          <button className="btn ghost" onClick={forfeit} disabled={state.over}>🏳️ Aufgabe" aria-label="Aufgeben</button>
-          <button className="btn" onClick={rematch}>🔁 Rematch" aria-label="Rematch starten</button>
-          <button className="btn" onClick={onExit}>⬅️ Zurück" aria-label="Zurück</button>
+          <button className="btn ghost" onClick={forfeit} disabled={state.over} aria-label="Aufgeben">🏳️ Aufgabe</button>
+          <button className="btn" onClick={rematch} aria-label="Rematch starten">🔁 Rematch</button>
+          <button className="btn" onClick={onExit} aria-label="Zurück">⬅️ Zurück</button>
         </div>
       </div>
 
@@ -373,8 +388,8 @@ export default function BattleScreen({ room, teams, onExit }) {
             })}
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap:'wrap' }}>
-            <button className="btn secondary" onClick={() => setShowParty(v=>!v)} disabled={!canClick}>🔄 Pokémon wechseln" aria-label="Pokémon wechseln</button>
-            <button className="btn ghost" onClick={() => window.location.reload()}>🔁 Neues Match" aria-label="Neues Match</button>
+            <button className="btn secondary" onClick={() => setShowParty(v=>!v)} disabled={!canClick} aria-label="Pokémon wechseln">🔄 Pokémon wechseln</button>
+            <button className="btn ghost" onClick={() => window.location.reload()} aria-label="Neues Match">🔁 Neues Match</button>
           </div>
 
           {showParty && (
@@ -440,8 +455,8 @@ export default function BattleScreen({ room, teams, onExit }) {
             </div>
 
             <div className="modal-actions">
-              <button className="btn" onClick={rematch}>🔁 Rematch" aria-label="Rematch starten</button>
-              <button className="btn secondary" onClick={onExit}>⬅️ Zur Auswahl" aria-label="Zur Auswahl</button>
+              <button className="btn" onClick={rematch} aria-label="Rematch starten">🔁 Rematch</button>
+              <button className="btn secondary" onClick={onExit} aria-label="Zur Auswahl">⬅️ Zur Auswahl</button>
             </div>
           </div>
         </div>

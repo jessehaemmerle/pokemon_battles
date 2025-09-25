@@ -301,7 +301,7 @@ export default function TeamBuilder({ setBattleRoom, setTeams }) {
         <div className="helper">Bis zu 6 Pokémon. Importiere Showdown-Text oder wähle Moves individuell.</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {legalBadge}
-          <button className="btn ghost" onClick={() => setTeam([])}>🧹 Leeren" aria-label="Team leeren</button>
+          <button className="btn ghost" onClick={() => setTeam([])} aria-label="Team leeren">🧹 Leeren</button>
         </div>
       </div>
 
@@ -317,7 +317,7 @@ export default function TeamBuilder({ setBattleRoom, setTeams }) {
             onKeyDown={(e) => { if (e.key === 'Enter') addPokemon(); }}
             style={{ minWidth: 240 }}
           />
-          <button className="btn" onClick={addPokemon} disabled={!pokemonQuery || !canAddMore}>➕ Hinzufügen" aria-label="Pokémon hinzufügen</button>
+          <button className="btn" onClick={addPokemon} disabled={!pokemonQuery || !canAddMore} aria-label="Pokémon hinzufügen">➕ Hinzufügen</button>
           <div className="helper">Noch {Math.max(0, 6 - team.length)} Plätze frei</div>
         </div>
       </div>
