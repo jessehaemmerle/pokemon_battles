@@ -1,5 +1,6 @@
 // Shared type chart for both client and server
 // Keep as single source of truth.
+// Single Source of Truth für Typen
 export const TYPE_CHART = {
   normal:   { rock:0.5, ghost:0, steel:0.5 },
   fire:     { fire:0.5, water:0.5, grass:2, ice:2, bug:2, rock:0.5, dragon:0.5, steel:2 },
@@ -14,12 +15,13 @@ export const TYPE_CHART = {
   psychic:  { fighting:2, poison:2, psychic:0.5, steel:0.5, dark:0 },
   bug:      { grass:2, psychic:2, dark:2, fighting:0.5, fire:0.5, flying:0.5, ghost:0.5, steel:0.5, fairy:0.5, poison:0.5 },
   rock:     { fire:2, ice:2, flying:2, bug:2, fighting:0.5, ground:0.5, steel:0.5 },
-  ghost:    { ghost:2, psychic:2, normal:0, dark:0.5 },
+  ghost:    { psychic:2, ghost:2, dark:0.5, normal:0 },
   dragon:   { dragon:2, steel:0.5, fairy:0 },
   dark:     { ghost:2, psychic:2, fighting:0.5, dark:0.5, fairy:0.5 },
-  steel:    { rock:2, ice:2, fairy:2, fire:0.5, water:0.5, electric:0.5, steel:0.5 },
+  steel:    { ice:2, rock:2, fairy:2, fire:0.5, water:0.5, electric:0.5, steel:0.5 },
   fairy:    { fighting:2, dragon:2, dark:2, fire:0.5, poison:0.5, steel:0.5 }
 };
+
 export function typeEffectiveness(moveType, targetType) {
   const row = TYPE_CHART[moveType] || {};
   return row[targetType] ?? 1;

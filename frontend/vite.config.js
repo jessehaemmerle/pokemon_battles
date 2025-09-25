@@ -1,4 +1,3 @@
-// vite.config.js
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
@@ -14,12 +13,10 @@ export default defineConfig({
     alias: {
       react: path.resolve(__dirname, 'node_modules/react'),
       'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
+      '@': path.resolve(__dirname, 'src'), // optionaler Komfort
     },
   },
   optimizeDeps: {
     include: ['react', 'react-dom']
-  },
-  build: {
-    sourcemap: false
   }
 });
