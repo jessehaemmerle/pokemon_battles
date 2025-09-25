@@ -1,3 +1,9 @@
+const LS_TTL = 1000*60*60*24; // 24h
+function cachedFetch(url){
+  const key='cache:'+url; const now=Date.now();
+  try{ const v = JSON.parse(localStorage.getItem(key)||'null'); if(v && now < v.exp){ return Promise.resolve(v.data); } }catch{}
+  return fetch(url).then(r=>{ if(!r.ok) throw new Error(url); return r.json(); }).then(data=>{ try{ localStorage.setItem(key, JSON.stringify({exp:now+LS_TTL,data})) }catch{}; return data; });
+}
 import { useEffect, useMemo, useState } from 'react';
 import { socket } from '../lib/socket';
 
@@ -59,7 +65,7 @@ export default function TeamBuilder({ setBattleRoom, setTeams }) {
     const speciesKey = String(slot.species || '').toLowerCase().trim().replace(/\s+/g, '-');
     if (!speciesKey) return null;
     try {
-      const r = await fetch(`https://pokeapi.co/api/v2/pokemon/${speciesKey}`);
+      const r = await cachedFetch(`https://pokeapi.co/api/v2/pokemon/${speciesKey}`);
       if (!r.ok) throw new Error('not ok');
       const p = await r.json();
       return {
@@ -88,7 +94,7 @@ export default function TeamBuilder({ setBattleRoom, setTeams }) {
     if (!pokemonQuery || !canAddMore) return;
     const key = pokemonQuery.toLowerCase().trim();
     try {
-      const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${key}`);
+      const res = await cachedFetch(`https://pokeapi.co/api/v2/pokemon/${key}`);
       if (!res.ok) throw new Error('Pokémon nicht gefunden');
       const poke = await res.json();
       setTeam(prev => [
@@ -254,7 +260,7 @@ export default function TeamBuilder({ setBattleRoom, setTeams }) {
     setPickerLoading(true);
     try {
       const key = String(mon.species || mon.name).toLowerCase().replace(/\s+/g, '-');
-      const r = await fetch(`https://pokeapi.co/api/v2/pokemon/${key}`);
+      const r = await cachedFetch(`https://pokeapi.co/api/v2/pokemon/${key}`);
       if (!r.ok) throw new Error('Pokémon nicht gefunden');
       const p = await r.json();
       // moves -> { name } (einfach)
@@ -295,7 +301,7 @@ export default function TeamBuilder({ setBattleRoom, setTeams }) {
         <div className="helper">Bis zu 6 Pokémon. Importiere Showdown-Text oder wähle Moves individuell.</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {legalBadge}
-          <button className="btn ghost" onClick={() => setTeam([])}>🧹 Leeren</button>
+          <button className="btn ghost" onClick={() => setTeam([])}>🧹 Leeren" aria-label="Team leeren</button>
         </div>
       </div>
 
@@ -311,7 +317,7 @@ export default function TeamBuilder({ setBattleRoom, setTeams }) {
             onKeyDown={(e) => { if (e.key === 'Enter') addPokemon(); }}
             style={{ minWidth: 240 }}
           />
-          <button className="btn" onClick={addPokemon} disabled={!pokemonQuery || !canAddMore}>➕ Hinzufügen</button>
+          <button className="btn" onClick={addPokemon} disabled={!pokemonQuery || !canAddMore}>➕ Hinzufügen" aria-label="Pokémon hinzufügen</button>
           <div className="helper">Noch {Math.max(0, 6 - team.length)} Plätze frei</div>
         </div>
       </div>
