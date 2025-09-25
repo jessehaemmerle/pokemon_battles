@@ -78,8 +78,8 @@ export default function RandomBattle({ setBattleRoom, setTeams }) {
       </div>
 
       <div style={{ display:'flex', gap: 10 }}>
-        <button className="btn" onClick={startOnline}>🌐 Online-Battle" aria-label="Online-Battle starten</button>
-        <button className="btn secondary" onClick={startBot}>🤖 Bot-Battle" aria-label="Bot-Battle starten</button>
+        <button className="btn" onClick={startOnline}>🌐 Online-Battle</button>
+        <button className="btn secondary" onClick={startBot}>🤖 Bot-Battle</button>
       </div>
     </div>
   );
