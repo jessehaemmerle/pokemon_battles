@@ -2,10 +2,10 @@ import { useState, Suspense, lazy } from 'react';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 import { I18nProvider, useI18n } from './i18n.jsx';
 
-const RandomBattle = lazy(() => import('./RandomBattle.jsx'));
-const BattleScreen = lazy(() => import('./BattleScreen.jsx'));
-const TeamBuilder = lazy(() => import('./TeamBuilder.jsx'));
-const ReplayViewer = lazy(() => import('./ReplayViewer.jsx'));
+const RandomBattle = lazy(() => import('./components/RandomBattle.jsx'));
+const BattleScreen = lazy(() => import('./components/BattleScreen.jsx'));
+const TeamBuilder = lazy(() => import('./components/TeamBuilder.jsx'));
+const ReplayViewer = lazy(() => import('./components/ReplayViewer.jsx'));
 
 function InnerApp() {
   const [battleRoom, setBattleRoom] = useState(null);
