@@ -4,10 +4,10 @@ const rooms = new Map();           // roomId -> state
 const replays = new Map();         // replayId -> { seed, log, meta, teams }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// --------- RNG (seed optional; für echte Deterministik: sfc32/alea einsetzen) ----------
+// --------- RNG ----------
 function rnd() { return Math.random(); }
 
-// --------- Type Chart, Gen-Ranges (wie zuvor) ----------
+// --------- Type Chart, Gen-Ranges ----------
 const TYPE_CHART = {
   normal:{rock:0.5,ghost:0,steel:0.5}, fire:{fire:0.5,water:0.5,grass:2,ice:2,bug:2,rock:0.5,dragon:0.5,steel:2},
   water:{fire:2,water:0.5,grass:0.5,ground:2,rock:2,dragon:0.5}, electric:{water:2,electric:0.5,grass:0.5,ground:0,flying:2,dragon:0.5},
@@ -35,7 +35,12 @@ const GEN_RANGES = {
 const pokemonCache = new Map();
 const moveCache = new Map();
 async function fetchJson(url){ const r = await fetch(url); if(!r.ok) throw new Error(url); return r.json(); }
-async function getPokemonById(id){ if(pokemonCache.has(id)) return pokemonCache.get(id); const d=await fetchJson(`https://pokeapi.co/api/v2/pokemon/${id}`); pokemonCache.set(id,d); return d; }
+async function getPokemonByIdOrSlug(idOrSlug){
+  const key = String(idOrSlug).toLowerCase();
+  if(pokemonCache.has(key)) return pokemonCache.get(key);
+  const d=await fetchJson(`https://pokeapi.co/api/v2/pokemon/${key}`);
+  pokemonCache.set(key,d); return d;
+}
 async function getMoveByRef(ref){ const key = typeof ref==='string'?ref:ref.url; if(moveCache.has(key)) return moveCache.get(key); const d=await fetchJson(typeof ref==='string'?ref:ref.url); moveCache.set(key,d); return d; }
 
 // --- helpers ---
@@ -96,7 +101,7 @@ export async function generateTeam(gens=1, size=6){
   while(team.length<size){
     const id = pickRandomIdFromGens(gens);
     if(chosen.has(id)) continue; chosen.add(id);
-    const data = await getPokemonById(id);
+    const data = await getPokemonByIdOrSlug(id);
     const types = (data.types||[]).map(t=>t.type.name);
     const stats = Object.fromEntries(data.stats.map(s=>[s.stat.name,s.base_stat]));
     const moves = await pickRealMoves(data);
@@ -116,7 +121,57 @@ export async function generateTeam(gens=1, size=6){
   return team;
 }
 
-// --------- battle calc (mit Items/Abilities/Weather/Terrain, wie zuvor) ---------
+// 🆕 Materialisiere Team aus Showdown-Lite Slots
+async function materializeTeamFromLite(lite=[], gens=1){
+  const team=[];
+  for(const slot of (lite||[]).slice(0,6)){
+    const speciesKey = String(slot?.species || '').toLowerCase().trim().replace(/\s+/g,'-');
+    if(!speciesKey) continue;
+    const data = await getPokemonByIdOrSlug(speciesKey);
+    const types = (data.types||[]).map(t=>t.type.name);
+    const stats = Object.fromEntries(data.stats.map(s=>[s.stat.name,s.base_stat]));
+    // Moves: nehme gewünschte Moves, fülle fehlende mit pickRealMoves auf
+    const desired = Array.isArray(slot.moves) ? slot.moves.map(m => (typeof m==='string' ? m : m?.name)).filter(Boolean) : [];
+    const chosen = [];
+    for(const name of desired.slice(0,4)){
+      try{
+        const mv = await getMoveByRef(`https://pokeapi.co/api/v2/move/${name.toLowerCase()}`);
+        chosen.push({
+          name: mv.name, power: mv.power, type: mv.type?.name,
+          category: mv.damage_class?.name, accuracy: mv.accuracy ?? 100,
+          priority: mv.priority ?? 0, ailment: mv.meta?.ailment?.name ?? null,
+          ailmentChance: mv.meta?.ailment_chance ?? 0,
+          pp: mv.pp ?? 10, currentPP: mv.pp ?? 10,
+          statChanges: (mv.stat_changes||[]).map(sc=>({ stat:sc.stat.name, change:sc.change }))
+        });
+      } catch { /* ignore invalid move name */ }
+    }
+    if(chosen.length<4){
+      const auto = await pickRealMoves(data);
+      for(const mv of auto){
+        if(chosen.length>=4) break;
+        if(!chosen.some(x=>x.name===mv.name)) chosen.push(mv);
+      }
+    }
+    const ability = slot.ability && RAND_ABILITIES.includes(slot.ability) ? slot.ability : (RAND_ABILITIES[Math.floor(rnd()*RAND_ABILITIES.length)]);
+    const item = (slot.item && RAND_ITEMS.includes(slot.item)) ? slot.item : (RAND_ITEMS[Math.floor(rnd()*RAND_ITEMS.length)] || null);
+    team.push({
+      id:data.id, name:data.name, sprite:data.sprites.front_default, types,
+      stats: { hp:stats.hp??60, attack:stats.attack??60, defense:stats.defense??60, spAttack:stats['special-attack']??60, spDefense:stats['special-defense']??60, speed:stats.speed??60 },
+      currentHp: stats.hp ?? 60,
+      status:null,
+      stages:{ atk:0,def:0,spa:0,spd:0,spe:0,acc:0,eva:0 },
+      ability, abilityState:{},
+      item, choiceLock:null,
+      moves: chosen.slice(0,4)
+    });
+  }
+  // Falls Lite-Array leer/ungültig → fallback
+  if(team.length===0) return generateTeam(gens,6);
+  return team;
+}
+
+// --------- battle calc (Items/Abilities/Weather/Terrain) ----------
 function calcDamage(attacker, defender, move, state){
   const level=50;
   const isPhysical = move.category==='physical';
@@ -212,7 +267,7 @@ function addHazard(state, side, kind, amount=1, max=3){
   sc[kind]=clamp(sc[kind]+amount,0,max);
 }
 
-// --------- End-of-turn pipeline (inkl. Residual-Order) ---------
+// --------- End-of-turn pipeline ---------
 function endOfTurn(state, io, room){
   // Terrain heal
   for(const side of ['player1','player2']){
@@ -327,7 +382,7 @@ function startTurnTimer(io, room){
   state.turnTimer.id = setTimeout(tick, 1000);
 }
 
-// --------- Core Turn Engine (Ein-Zug + PP + Struggle + Forfeit) ----------
+// --------- Core Turn Engine ----------
 async function executeAction(io, room, side, action){
   const state = rooms.get(room); if(!state || state.over) return;
   const opp = side==='player1'?'player2':'player1';
@@ -564,9 +619,10 @@ export function getRoomSnapshot(room){
   };
 }
 
-export async function startPvpQuickMatch(io, socket, gens=1){
+export async function startPvpQuickMatch(io, socket, gens=1, customTeamLite=null){
   const room=`pvp-${socket.id}-${Math.random().toString(36).slice(2,8)}`;
-  const p1=await generateTeam(gens,6), p2=await generateTeam(gens,6);
+  const p1 = customTeamLite ? await materializeTeamFromLite(customTeamLite, gens) : await generateTeam(gens,6);
+  const p2 = await generateTeam(gens,6);
   const state = {
     room, gens: normalizeGens(gens), mode:'pvp',
     teams:{ player1:p1, player2:p2 }, active:{ player1:0, player2:0 },
@@ -583,9 +639,10 @@ export async function startPvpQuickMatch(io, socket, gens=1){
   startTurnTimer(io, room);
 }
 
-export async function startBotBattle(io, socket, gens=1){
+export async function startBotBattle(io, socket, gens=1, customTeamLite=null){
   const room=`bot-${socket.id}`;
-  const p1=await generateTeam(gens,6), p2=await generateTeam(gens,6);
+  const p1 = customTeamLite ? await materializeTeamFromLite(customTeamLite, gens) : await generateTeam(gens,6);
+  const p2 = await generateTeam(gens,6);
   const state = {
     room, gens: normalizeGens(gens), mode:'bot',
     teams:{ player1:p1, player2:p2 }, active:{ player1:0, player2:0 },
@@ -633,9 +690,7 @@ export function clientForfeit(io, room, side){
 export async function clientRematch(io, room){
   const old=rooms.get(room); if(!old) return;
   const gens = old.gens;
-  const sockets = await io.in(room).fetchSockets();
-  const one = sockets[0];
-  // reset with fresh teams
+  // reset with fresh teams (Custom-Team wird hier NICHT automatisch erneut verwendet)
   const p1=await generateTeam(gens,6), p2=await generateTeam(gens,6);
   const state = {
     room, gens, mode: old.mode, teams:{ player1:p1, player2:p2 }, active:{ player1:0, player2:0 },
@@ -718,8 +773,6 @@ export function checkTeamLegality(team, gens){
   if(!Array.isArray(team) || team.length===0 || team.length>6) return false;
   for(const s of team){
     if(!s?.species) return false;
-    // naive species→id lookup: PokéAPI benötigt Mapping; wir tolerieren hier frei, solange Name existiert
-    // (Optional) könnte man Name→id via extra fetch auflösen
     if(s.ability && !abilities.has(s.ability)) return false;
     if(s.item && !items.has(s.item)) return false;
     if(!Array.isArray(s.moves) || s.moves.length>4) return false;

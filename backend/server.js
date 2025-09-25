@@ -77,7 +77,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Bot-Battle
+  // Bot-Battle (Random)
   socket.on('start-bot-battle', async (data) => {
     try {
       const gens = data?.generations?.length ? data.generations : (data?.generation ?? 1);
@@ -85,6 +85,43 @@ io.on('connection', (socket) => {
     } catch (e) {
       console.error(e);
       socket.emit('error-message', 'Bot-Battle konnte nicht gestartet werden.');
+    }
+  });
+
+  // 🆕 Custom-Team vs Bot
+  socket.on('start-custom-bot', async ({ team, generations }) => {
+    try {
+      // Optional schnelle Plausibilitätsprüfung
+      if (!Array.isArray(team) || team.length === 0 || team.length > 6) {
+        return socket.emit('error-message', 'Ungültiges Team.');
+      }
+      const gens = (generations?.length ? generations : [1]);
+      const ok = checkTeamLegality(team, gens);
+      if (!ok) {
+        return socket.emit('error-message', 'Team ist nicht legal.');
+      }
+      await startBotBattle(io, socket, gens, team);
+    } catch (e) {
+      console.error(e);
+      socket.emit('error-message', 'Custom Bot-Battle konnte nicht gestartet werden.');
+    }
+  });
+
+  // 🆕 Custom-Team PvP (p1 nutzt Custom-Team, p2 Random)
+  socket.on('start-custom-pvp', async ({ team, generations }) => {
+    try {
+      if (!Array.isArray(team) || team.length === 0 || team.length > 6) {
+        return socket.emit('error-message', 'Ungültiges Team.');
+      }
+      const gens = (generations?.length ? generations : [1]);
+      const ok = checkTeamLegality(team, gens);
+      if (!ok) {
+        return socket.emit('error-message', 'Team ist nicht legal.');
+      }
+      await startPvpQuickMatch(io, socket, gens, team);
+    } catch (e) {
+      console.error(e);
+      socket.emit('error-message', 'Custom PvP-Battle konnte nicht gestartet werden.');
     }
   });
 
