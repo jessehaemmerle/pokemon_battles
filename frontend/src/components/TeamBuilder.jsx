@@ -6,6 +6,8 @@ function cachedFetch(url){
 }
 import { useEffect, useMemo, useState } from 'react';
 import { socket } from '../lib/socket';
+import { useToast } from './ToastProvider.jsx';
+import { copyText } from '../lib/clipboard.js';
 
 /**
  * Features:
@@ -17,6 +19,7 @@ import { socket } from '../lib/socket';
  */
 
 const API = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+const toast = useToast();
 
 function useLocalTeams() {
   const KEY = 'pb_teams';
@@ -321,6 +324,17 @@ export default function TeamBuilder({ setBattleRoom, setTeams }) {
           <div className="helper">Noch {Math.max(0, 6 - team.length)} Plätze frei</div>
         </div>
       </div>
+
+      {/* Zwischenablage */}
+      <button className="btn ghost" onClick={async () => {
+        const json = JSON.stringify(team, null, 2);
+        const ok = await copyText(json);
+          if (ok) toast.success('Team in die Zwischenablage kopiert.');
+          else toast.error('Kopieren fehlgeschlagen – bitte manuell kopieren.');
+          }}
+        aria-label="Team in die Zwischenablage kopieren"
+        title="Team kopieren"
+      >📋 Team kopieren</button>
 
       {/* Team Grid */}
       {team.length > 0 ? (

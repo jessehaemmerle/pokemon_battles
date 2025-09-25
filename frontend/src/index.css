@@ -171,3 +171,65 @@ html, body, #root { height: 100%; margin: 0; color: var(--ink); font-family: Int
 .stat:last-child { border-bottom:0; }
 .team-sprites { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; }
 .team-sprites img { width:56px; image-rendering: pixelated; filter: drop-shadow(0 6px 10px rgba(0,0,0,.18)); }
+
+/* === Toasts === */
+.toast-wrap {
+  position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 100;
+  max-width: min(92vw, 420px);
+}
+.toast {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px;
+  background: var(--panel); color: var(--ink);
+  border: 2px solid var(--line); border-left-width: 8px;
+  border-radius: 12px; padding: 10px 12px;
+  box-shadow: 0 10px 28px rgba(0,0,0,.16);
+  animation: toast-in .15s ease;
+}
+.toast .toast-dot { width: 10px; height: 10px; border-radius: 999px; background: var(--brand); }
+.toast.info  { border-left-color: var(--brand); }
+.toast.success { border-left-color: var(--ok); }
+.toast.warn { border-left-color: var(--warn); }
+.toast.error { border-left-color: var(--bad); }
+.toast-x {
+  border: 0; background: transparent; color: inherit; font-weight: 900; cursor: pointer;
+  opacity: .8;
+}
+@keyframes toast-in { from { transform: translateY(6px); opacity: 0 } to { transform: translateY(0); opacity: 1 } }
+
+/* === Responsive layout === */
+.card-landing { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 980px) {
+  .ui-area { grid-template-columns: 1fr; }
+  .info-top, .info-bottom { position: static; min-width: 0; margin-bottom: 8px; }
+  .battle-stage { aspect-ratio: 16/10; }
+}
+@media (max-width: 720px) {
+  .card-landing { grid-template-columns: 1fr; }
+  .sprite { width: 124px; }
+  .hpbar { width: 140px; }
+  .tabs { flex-wrap: wrap; }
+}
+
+/* === Type chips — Showdown palette === */
+.type-normal  { background:#A8A77A20; border-color:#A8A77A55; color:#3a3a2a; }
+.type-fire    { background:#EE813020; border-color:#EE813055; color:#5c2a07; }
+.type-water   { background:#6390F020; border-color:#6390F055; color:#0e2d73; }
+.type-electric{ background:#F7D02C20; border-color:#F7D02C55; color:#5b4700; }
+.type-grass   { background:#7AC74C20; border-color:#7AC74C55; color:#1e4a13; }
+.type-ice     { background:#96D9D620; border-color:#96D9D655; color:#0e4e4a; }
+.type-fighting{ background:#C22E2820; border-color:#C22E2855; color:#5e1613; }
+.type-poison  { background:#A33EA120; border-color:#A33EA155; color:#4b1a48; }
+.type-ground  { background:#E2BF6520; border-color:#E2BF6555; color:#5c4718; }
+.type-flying  { background:#A98FF320; border-color:#A98FF355; color:#3d2f6a; }
+.type-psychic { background:#F9558720; border-color:#F9558755; color:#6c1a32; }
+.type-bug     { background:#A6B91A20; border-color:#A6B91A55; color:#3b4609; }
+.type-rock    { background:#B6A13620; border-color:#B6A13655; color:#4e4212; }
+.type-ghost   { background:#73579720; border-color:#73579755; color:#2d2340; }
+.type-dragon  { background:#6F35FC20; border-color:#6F35FC55; color:#2a1470; }
+.type-dark    { background:#70574620; border-color:#70574655; color:#2b221c; }
+.type-steel   { background:#B7B7CE20; border-color:#B7B7CE55; color:#3a3a49; }
+.type-fairy   { background:#D685AD20; border-color:#D685AD55; color:#61324a; }
+
+/* === Small utilities === */
+.row { display:flex; gap:8px; align-items:center; }
+.gap-6 { gap:6px; }
