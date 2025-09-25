@@ -1,6 +1,6 @@
 import { useState, Suspense, lazy } from 'react';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
-import { I18nProvider, useI18n } from './i18n.js';
+import { I18nProvider, useI18n } from './i18n.jsx';
 
 const RandomBattle = lazy(() => import('./RandomBattle.jsx'));
 const BattleScreen = lazy(() => import('./BattleScreen.jsx'));
