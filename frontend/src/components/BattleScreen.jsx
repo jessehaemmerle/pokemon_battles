@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo } from 'react';
 import { socket } from '../lib/socket';
 
 // --- Type chart moved to shared ---
-import { TYPE_CHART } from './shared/typeChart.js'
+import { TYPE_CHART } from '../shared/typeChart.js'
 
 const effMultiplier = (moveType, defTypes=[]) =>
   defTypes.reduce((acc,t)=>acc*(TYPE_CHART[moveType]?.[t] ?? 1), 1);
