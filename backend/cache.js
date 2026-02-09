@@ -1,18 +1,42 @@
-import fs from 'fs'; import path from 'path';
-const dir = process.env.CACHE_DIR || './data/cache';
-if(!fs.existsSync(dir)){ fs.mkdirSync(dir, { recursive: true }); }
-export async function cachedFetchJson(fetch, url, ttlMs=86400000){
-  const key = Buffer.from(url).toString('base64').replace(/[/+=]/g,'_');
-  const file = path.join(dir, key + '.json');
-  try{
-    const st = fs.statSync(file);
-    if(Date.now() - st.mtimeMs < ttlMs){
-      return JSON.parse(fs.readFileSync(file,'utf-8'));
-    }
-  }catch{}
-  const r = await fetch(url);
-  if(!r.ok) throw new Error('HTTP ' + r.status + ' for ' + url);
-  const data = await r.json();
-  try{ fs.writeFileSync(file, JSON.stringify(data)); }catch{}
-  return data;
+const fs = require('fs');
+const path = require('path');
+
+const CACHE_FILE = path.join(__dirname, '.cache.json');
+const memoryCache = new Map();
+
+function loadFileCache() {
+  try {
+    if (!fs.existsSync(CACHE_FILE)) return;
+    const raw = fs.readFileSync(CACHE_FILE, 'utf-8');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    Object.entries(data).forEach(([k, v]) => memoryCache.set(k, v));
+  } catch (err) {
+    // ignore
+  }
 }
+
+function saveFileCache() {
+  try {
+    const obj = Object.fromEntries(memoryCache.entries());
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(obj), 'utf-8');
+  } catch (err) {
+    // ignore
+  }
+}
+
+function getCache(key) {
+  return memoryCache.get(key);
+}
+
+function setCache(key, value) {
+  memoryCache.set(key, value);
+  saveFileCache();
+}
+
+loadFileCache();
+
+module.exports = {
+  getCache,
+  setCache
+};

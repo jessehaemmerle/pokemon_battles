@@ -1,8 +1,11 @@
 import { io } from 'socket.io-client';
 
-// In Render als Env-Var setzen: VITE_BACKEND_URL=https://<dein-backend>.onrender.com
-const URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+let socketInstance = null;
 
-export const socket = io(URL, {
-  autoConnect: true
-});
+export function getSocket() {
+  if (!socketInstance) {
+    socketInstance = io(backendUrl, { transports: ['websocket'] });
+  }
+  return socketInstance;
+}

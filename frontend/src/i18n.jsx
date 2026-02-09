@@ -1,45 +1,43 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import React, { createContext, useContext, useMemo, useState } from 'react';
 
-// --- Sprach-Ressourcen ---
-const RES = {
-  en: {
-    hello: "Hello",
-    battle: "Battle",
-    team: "Team",
-    replay: "Replay",
-  },
+const translations = {
   de: {
-    hello: "Hallo",
-    battle: "Kampf",
-    team: "Team",
-    replay: "Wiederholung",
+    battle: 'Kampf',
+    replay: 'Replay',
+    randomBattle: 'Random Battle',
+    teamBuilder: 'Team Builder',
+    onlineBattle: 'Online-Battle',
+    botBattle: 'Bot-Battle',
+    start: 'Start',
+    theme: 'Theme'
   },
+  en: {
+    battle: 'Battle',
+    replay: 'Replay',
+    randomBattle: 'Random Battle',
+    teamBuilder: 'Team Builder',
+    onlineBattle: 'Online Battle',
+    botBattle: 'Bot Battle',
+    start: 'Start',
+    theme: 'Theme'
+  }
 };
 
-// --- Context erstellen ---
-export const I18nCtx = createContext({
-  t: (k) => k,
-  lang: "en",
-  setLang: () => {},
-});
+const I18nContext = createContext(null);
 
-// --- Provider-Komponente ---
-export function I18nProvider({ children, initial = "en" }) {
-  const [lang, setLang] = useState(initial);
+export function I18nProvider({ children }) {
+  const [locale, setLocale] = useState('de');
+  const value = useMemo(() => ({
+    locale,
+    setLocale,
+    t: (key) => translations[locale][key] || key
+  }), [locale]);
 
-  const value = useMemo(
-    () => ({
-      lang,
-      setLang,
-      t: (k) => (RES[lang] && RES[lang][k]) || k,
-    }),
-    [lang]
-  );
-
-  return <I18nCtx.Provider value={value}>{children}</I18nCtx.Provider>;
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 
-// --- Hook für Nutzung ---
 export function useI18n() {
-  return useContext(I18nCtx);
+  const ctx = useContext(I18nContext);
+  if (!ctx) throw new Error('useI18n must be used within I18nProvider');
+  return ctx;
 }

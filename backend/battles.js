@@ -1,765 +1,1113 @@
-import { cachedFetchJson } from './cache.js';
-import fetch from 'node-fetch';
+const { getCache, setCache } = require('./cache');
+const { TYPE_CHART, typeEffectiveness } = require('./shared/typeChart');
 
-const rooms = new Map();           // roomId -> state
-const replays = new Map();         // replayId -> { seed, log, meta, teams }
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const POKEAPI = 'https://pokeapi.co/api/v2';
+const rooms = new Map();
+const replays = new Map();
 
-// --------- RNG ----------
-function rnd() { return Math.random(); }
+async function fetchJson(url) {
+  const cached = getCache(url);
+  if (cached) return cached;
+  let fetchFn = global.fetch;
+  if (!fetchFn) {
+    const mod = await import('node-fetch');
+    fetchFn = mod.default;
+  }
+  const res = await fetchFn(url);
+  if (!res.ok) throw new Error(`Fetch failed ${res.status}`);
+  const data = await res.json();
+  setCache(url, data);
+  return data;
+}
 
-// --------- Type Chart moved to shared ---------
-import { TYPE_CHART } from './shared/typeChart.js'
 const GEN_RANGES = {
-  1:[1,151],2:[152,251],3:[252,386],4:[387,493],5:[494,649],
-  6:[650,721],7:[722,809],8:[810,898],9:[899,1010]
+  1: [1, 151],
+  2: [152, 251],
+  3: [252, 386],
+  4: [387, 493],
+  5: [494, 649],
+  6: [650, 721],
+  7: [722, 809],
+  8: [810, 905],
+  9: [906, 1025]
 };
 
-// --- caches ---
-const pokemonCache = new Map();
-const moveCache = new Map();
-async function fetchJson(url){ return cachedFetchJson(fetch, url, 1000*60*60*24); }
-async function getPokemonByIdOrSlug(idOrSlug){
-  const key = String(idOrSlug).toLowerCase();
-  if(pokemonCache.has(key)) return pokemonCache.get(key);
-  const d=await fetchJson(`https://pokeapi.co/api/v2/pokemon/${key}`);
-  pokemonCache.set(key,d); return d;
-}
-async function getMoveByRef(ref){ const key = typeof ref==='string'?ref:ref.url; if(moveCache.has(key)) return moveCache.get(key); const d=await fetchJson(typeof ref==='string'?ref:ref.url); moveCache.set(key,d); return d; }
-
-// --- helpers ---
-const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
-const stageMult = (n)=>n>=0?(2+n)/2:2/(2-n);
-const grounded = (mon)=>!mon.types.includes('flying');
-const typeMultiplier=(a,defs)=>defs.reduce((acc,t)=>acc*(TYPE_CHART[a]?.[t]??1),1);
-
-function normalizeGens(gens){ if(Array.isArray(gens)&&gens.length) return gens.map(Number).filter(g=>GEN_RANGES[g]); const n=Number(gens)||1; return GEN_RANGES[n]?[n]:[1]; }
-function pickRandomIdFromGens(gens){
-  const ranges = normalizeGens(gens).map(g=>GEN_RANGES[g]);
-  const sizes = ranges.map(([a,b])=>b-a+1);
-  const total = sizes.reduce((s,x)=>s+x,0);
-  let r = Math.floor(rnd()*total)+1;
-  for(let i=0;i<ranges.length;i++){ if(r<=sizes[i]){ const [a,b]=ranges[i]; return Math.floor(rnd()*(b-a+1))+a; } r-=sizes[i]; }
-  const [a,b]=ranges[0]; return Math.floor(rnd()*(b-a+1))+a;
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// --- moves picking + PP ---
-const KNOWN_STATUS = new Set([
-  'swords-dance','growl','calm-mind','stealth-rock','spikes','toxic-spikes',
-  'rain-dance','sunny-day','sandstorm','hail','electric-terrain','grassy-terrain'
-]);
-
-async function pickRealMoves(pokemonData){
-  const take = async list => Promise.all(list.map(async m=>{
-    try{
-      const mv = await getMoveByRef(m.move);
-      return {
-        name: mv.name, power: mv.power, type: mv.type?.name,
-        category: mv.damage_class?.name, accuracy: mv.accuracy ?? 100,
-        priority: mv.priority ?? 0, ailment: mv.meta?.ailment?.name ?? null,
-        ailmentChance: mv.meta?.ailment_chance ?? 0,
-        pp: mv.pp ?? 10,
-        statChanges: (mv.stat_changes||[]).map(sc=>({ stat:sc.stat.name, change:sc.change }))
-      };
-    }catch{ return null; }
-  }));
-  const details = (await take((pokemonData.moves||[]).slice(0,100))).filter(Boolean);
-  const damaging = details.filter(m=>m.power>0 && (m.category==='physical'||m.category==='special') && m.type);
-  const statusUseful = details.filter(m=>m.category==='status' && (KNOWN_STATUS.has(m.name) || m.statChanges?.length));
-  const byType = new Map();
-  for(const mv of damaging){ if(!byType.has(mv.type)) byType.set(mv.type,[]); byType.get(mv.type).push(mv); }
-  const selected=[];
-  for(const [,arr] of byType){ selected.push(arr[0]); if(selected.length>=3) break; }
-  if(statusUseful.length) selected.push(statusUseful[0]);
-  let i=0; while(selected.length<4 && i<damaging.length){ if(!selected.includes(damaging[i])) selected.push(damaging[i]); i++; }
-  while(selected.length<4) selected.push({ name:'tackle', power:40, type:'normal', category:'physical', accuracy:95, priority:0, pp:35 });
-  return selected.slice(0,4).map(m=>({ ...m, currentPP: m.pp }));
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// --- team generation ---
-const RAND_ABILITIES = ['intimidate','levitate','flash-fire','overgrow','blaze','torrent','guts'];
-const RAND_ITEMS = ['leftovers','choice-scarf','focus-sash','life-orb', null];
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
 
-export async function generateTeam(gens=1, size=6){
-  const team=[]; const chosen=new Set();
-  while(team.length<size){
-    const id = pickRandomIdFromGens(gens);
-    if(chosen.has(id)) continue; chosen.add(id);
-    const data = await getPokemonByIdOrSlug(id);
-    const types = (data.types||[]).map(t=>t.type.name);
-    const stats = Object.fromEntries(data.stats.map(s=>[s.stat.name,s.base_stat]));
-    const moves = await pickRealMoves(data);
-    const ability = RAND_ABILITIES[Math.floor(rnd()*RAND_ABILITIES.length)];
-    const item = RAND_ITEMS[Math.floor(rnd()*RAND_ITEMS.length)] || null;
-    team.push({
-      id:data.id, name:data.name, sprite:data.sprites.front_default, types,
-      stats: { hp:stats.hp??60, attack:stats.attack??60, defense:stats.defense??60, spAttack:stats['special-attack']??60, spDefense:stats['special-defense']??60, speed:stats.speed??60 },
-      currentHp: stats.hp ?? 60,
-      status:null,
-      stages:{ atk:0,def:0,spa:0,spd:0,spe:0,acc:0,eva:0 },
-      ability, abilityState:{},
-      item, choiceLock:null,
-      moves
-    });
+function calcStat(base, level, isHp) {
+  if (isHp) return Math.floor(((2 * base) * level) / 100) + level + 10;
+  return Math.floor(((2 * base) * level) / 100) + 5;
+}
+
+function stageMultiplier(stage) {
+  const s = clamp(stage, -6, 6);
+  if (s >= 0) return (2 + s) / 2;
+  return 2 / (2 + Math.abs(s));
+}
+
+function accStageMultiplier(stage) {
+  const s = clamp(stage, -6, 6);
+  if (s >= 0) return (3 + s) / 3;
+  return 3 / (3 - s);
+}
+
+function applyDamage(target, dmg, log, context) {
+  let actual = dmg;
+  if (target.item === 'focus-sash' && !target.itemUsed && target.hp === target.maxHp && dmg >= target.hp) {
+    target.hp = 1;
+    target.itemUsed = true;
+    if (log) log.push({ type: 'message', text: `${target.name} hung on with Focus Sash!` });
+    return 1;
   }
-  return team;
+  target.hp = clamp(target.hp - actual, 0, target.maxHp);
+  if (target.hp === 0) target.fainted = true;
+  return actual;
 }
 
-// 🆕 Materialisiere Team aus Showdown-Lite Slots
-async function materializeTeamFromLite(lite=[], gens=1){
-  const team=[];
-  for(const slot of (lite||[]).slice(0,6)){
-    const speciesKey = String(slot?.species || '').toLowerCase().trim().replace(/\s+/g,'-');
-    if(!speciesKey) continue;
-    const data = await getPokemonByIdOrSlug(speciesKey);
-    const types = (data.types||[]).map(t=>t.type.name);
-    const stats = Object.fromEntries(data.stats.map(s=>[s.stat.name,s.base_stat]));
-    // Moves: nehme gewünschte Moves, fülle fehlende mit pickRealMoves auf
-    const desired = Array.isArray(slot.moves) ? slot.moves.map(m => (typeof m==='string' ? m : m?.name)).filter(Boolean) : [];
-    const chosen = [];
-    for(const name of desired.slice(0,4)){
-      try{
-        const mv = await getMoveByRef(`https://pokeapi.co/api/v2/move/${name.toLowerCase()}`);
-        chosen.push({
-          name: mv.name, power: mv.power, type: mv.type?.name,
-          category: mv.damage_class?.name, accuracy: mv.accuracy ?? 100,
-          priority: mv.priority ?? 0, ailment: mv.meta?.ailment?.name ?? null,
-          ailmentChance: mv.meta?.ailment_chance ?? 0,
-          pp: mv.pp ?? 10, currentPP: mv.pp ?? 10,
-          statChanges: (mv.stat_changes||[]).map(sc=>({ stat:sc.stat.name, change:sc.change }))
-        });
-      } catch { /* ignore invalid move name */ }
-    }
-    if(chosen.length<4){
-      const auto = await pickRealMoves(data);
-      for(const mv of auto){
-        if(chosen.length>=4) break;
-        if(!chosen.some(x=>x.name===mv.name)) chosen.push(mv);
-      }
-    }
-    const ability = slot.ability && RAND_ABILITIES.includes(slot.ability) ? slot.ability : (RAND_ABILITIES[Math.floor(rnd()*RAND_ABILITIES.length)]);
-    const item = (slot.item && RAND_ITEMS.includes(slot.item)) ? slot.item : (RAND_ITEMS[Math.floor(rnd()*RAND_ITEMS.length)] || null);
-    team.push({
-      id:data.id, name:data.name, sprite:data.sprites.front_default, types,
-      stats: { hp:stats.hp??60, attack:stats.attack??60, defense:stats.defense??60, spAttack:stats['special-attack']??60, spDefense:stats['special-defense']??60, speed:stats.speed??60 },
-      currentHp: stats.hp ?? 60,
-      status:null,
-      stages:{ atk:0,def:0,spa:0,spd:0,spe:0,acc:0,eva:0 },
-      ability, abilityState:{},
-      item, choiceLock:null,
-      moves: chosen.slice(0,4)
-    });
-  }
-  // Falls Lite-Array leer/ungültig → fallback
-  if(team.length===0) return generateTeam(gens,6);
-  return team;
+function getMovePower(move) {
+  return move.power || 0;
 }
 
-// --------- battle calc (Items/Abilities/Weather/Terrain) ----------
-function calcDamage(attacker, defender, move, state){
-  const level=50;
-  const isPhysical = move.category==='physical';
-  const atkStage = stageMult(isPhysical?attacker.stages.atk:attacker.stages.spa);
-  const defStage = stageMult(isPhysical?defender.stages.def:defender.stages.spd);
-  const burnedAtkMod = (isPhysical && attacker.status?.type==='burn' && attacker.ability!=='guts') ? 0.5 : 1;
-  let Araw = isPhysical?attacker.stats.attack:attacker.stats.spAttack;
-  let Draw = isPhysical?defender.stats.defense:defender.stats.spDefense;
-
-  const lowHp = attacker.currentHp <= attacker.stats.hp/3;
-  let stabAbilityBoost=1;
-  if(lowHp){
-    if(attacker.ability==='overgrow'&&move.type==='grass') stabAbilityBoost=1.5;
-    if(attacker.ability==='blaze'&&move.type==='fire')   stabAbilityBoost=1.5;
-    if(attacker.ability==='torrent'&&move.type==='water')stabAbilityBoost=1.5;
-  }
-  if(attacker.ability==='guts' && attacker.status?.type){ if(isPhysical) Araw=Math.floor(Araw*1.5); }
-
-  let A=Math.max(1,Math.floor(Araw*atkStage*burnedAtkMod));
-  let D=Math.max(1,Math.floor(Draw*defStage));
-
-  let stab = attacker.types.includes(move.type)?1.5:1;
-  stab*=stabAbilityBoost;
-
-  const w = state.field.weather?.type;
-  if(w==='rain'){ if(move.type==='water') stab*=1.5; if(move.type==='fire') stab*=0.5; }
-  else if(w==='sun'){ if(move.type==='fire') stab*=1.5; if(move.type==='water') stab*=0.5; }
-
-  const t = state.field.terrain?.type;
-  if(grounded(attacker)){ if(t==='electric' && move.type==='electric') stab*=1.3; if(t==='grassy'&&move.type==='grass') stab*=1.3; }
-  if(attacker.ability==='flash-fire' && attacker.abilityState?.flashFireBoost && move.type==='fire') stab*=1.5;
-
-  let eff = typeMultiplier(move.type, defender.types);
-  if(defender.ability==='levitate' && move.type==='ground') eff=0;
-
-  const rand = 0.85 + rnd()*0.15;
-  const crit = (rnd() < 1/24) ? 1.5 : 1;
-
-  let post=1; if(attacker.item==='life-orb') post*=1.3;
-
-  const dmg = Math.floor(((((2*level)/5+2)*(move.power||40)*(A/Math.max(1,D)))/50 + 2)*stab*eff*rand*crit*post);
-  return { dmg: Math.max(1,dmg), eff, crit: crit>1 };
+function getTypeEffect(moveType, targetTypes) {
+  return typeEffectiveness(moveType, targetTypes);
 }
 
-// --------- state helpers ---------
-function aliveMons(team){ return team.filter(p=>p.currentHp>0); }
-function checkBattleEnd(state){
-  const a = aliveMons(state.teams.player1).length>0;
-  const b = aliveMons(state.teams.player2).length>0;
-  if(!a || !b){ state.over=true; state.winner=a?'player1':'player2'; return true; }
-  return false;
+function chooseAbility(abilities) {
+  const known = ['intimidate', 'levitate', 'flash-fire', 'overgrow', 'blaze', 'torrent', 'guts'];
+  const lower = abilities.map(a => a.ability.name);
+  const pick = known.find(k => lower.includes(k));
+  return pick || abilities[0]?.ability?.name || 'overgrow';
 }
-function toggleTurn(state){ state.turnOwner = state.turnOwner==='player1'?'player2':'player1'; }
 
-// --------- Hazards/Abilities on switch-in ---------
-function onSwitchIn(state, side){
-  const opp = side==='player1'?'player2':'player1';
-  const mon = state.teams[side][state.active[side]];
-  mon.choiceLock = null;
+function chooseItem(pokemon) {
+  const items = ['leftovers', 'choice-scarf', 'focus-sash', 'life-orb'];
+  return pickRandom(items);
+}
 
-  const sc = state.sideConditions[side]||{};
-  if(sc.stealthRock){
-    const eff = typeMultiplier('rock', mon.types);
-    const dmg = Math.max(1, Math.floor(mon.stats.hp*0.125*eff));
-    mon.currentHp = Math.max(0, mon.currentHp - dmg);
-  }
-  if(sc.spikes && grounded(mon)){
-    const layer = clamp(sc.spikes,1,3);
-    const pct = layer===1?0.125:layer===2?0.167:0.25;
-    const dmg = Math.max(1, Math.floor(mon.stats.hp*pct));
-    mon.currentHp = Math.max(0, mon.currentHp - dmg);
-  }
-  if(sc.toxicSpikes && grounded(mon)){
-    const layers = clamp(sc.toxicSpikes,1,2);
-    const isPoison = mon.types.includes('poison');
-    const isSteel = mon.types.includes('steel');
-    if(isPoison){ state.sideConditions[side].toxicSpikes=0; }
-    else if(!isSteel && !mon.types.includes('flying') && !mon.status?.type){
-      mon.status = layers>=2 ? { type:'toxic', toxicCounter:1 } : { type:'poison' };
+async function getPokemonById(id) {
+  return fetchJson(`${POKEAPI}/pokemon/${id}`);
+}
+
+async function getPokemonByName(name) {
+  return fetchJson(`${POKEAPI}/pokemon/${name.toLowerCase()}`);
+}
+
+async function getMoveByName(name) {
+  return fetchJson(`${POKEAPI}/move/${name.toLowerCase()}`);
+}
+
+async function pickRealMoves(pokemon) {
+  const moves = pokemon.moves.map(m => m.move.name);
+  const shuffled = moves.sort(() => 0.5 - Math.random()).slice(0, 10);
+  const details = [];
+  for (const m of shuffled) {
+    try {
+      const d = await getMoveByName(m);
+      details.push(d);
+    } catch (err) {
+      // ignore
     }
   }
-  if(mon.ability==='intimidate'){
-    const om = state.teams[opp][state.active[opp]];
-    om.stages.atk = clamp(om.stages.atk-1, -6, 6);
+  const damaging = details.filter(d => d.power && d.damage_class?.name !== 'status');
+  const status = details.filter(d => d.damage_class?.name === 'status');
+  const picked = [];
+  if (damaging.length) {
+    damaging.sort((a, b) => b.power - a.power);
+    picked.push(...damaging.slice(0, 3));
   }
+  if (status.length) picked.push(status[0]);
+  while (picked.length < 4 && damaging.length > picked.length) {
+    picked.push(damaging[picked.length]);
+  }
+  return picked.slice(0, 4).map(m => normalizeMove(m));
 }
 
-// --------- Field setters ---------
-function setWeather(state, type, turns=5){ state.field.weather={ type, turns }; }
-function setTerrain(state, type, turns=5){ state.field.terrain={ type, turns }; }
-function addHazard(state, side, kind, amount=1, max=3){
-  const sc = state.sideConditions[side]; if(!sc[kind]) sc[kind]=0;
-  sc[kind]=clamp(sc[kind]+amount,0,max);
-}
-
-// --------- End-of-turn pipeline ---------
-function endOfTurn(state, io, room){
-  // Terrain heal
-  for(const side of ['player1','player2']){
-    const mon = state.teams[side][state.active[side]];
-    if(!mon || mon.currentHp<=0) continue;
-    if(state.field.terrain?.type==='grassy' && grounded(mon)){
-      const heal = Math.max(1, Math.floor(mon.stats.hp*0.0625));
-      mon.currentHp = clamp(mon.currentHp+heal,0,mon.stats.hp);
-      io.to(room).emit('status-heal', { side, type:'grassy', heal });
-    }
-  }
-  // Leftovers
-  for(const side of ['player1','player2']){
-    const mon = state.teams[side][state.active[side]];
-    if(!mon || mon.currentHp<=0) continue;
-    if(mon.item==='leftovers'){
-      const heal = Math.max(1, Math.floor(mon.stats.hp*0.0625));
-      mon.currentHp = Math.min(mon.stats.hp, mon.currentHp+heal);
-      io.to(room).emit('item-heal', { side, item:'leftovers', heal });
-    }
-  }
-  // Poison/Toxic
-  for(const side of ['player1','player2']){
-    const mon = state.teams[side][state.active[side]];
-    if(!mon || mon.currentHp<=0) continue;
-    if(mon.status?.type==='poison'){
-      const dmg = Math.max(1, Math.floor(mon.stats.hp*0.125));
-      mon.currentHp = Math.max(0, mon.currentHp-dmg);
-      io.to(room).emit('status-tick', { side, type:'poison', damage:dmg });
-    } else if(mon.status?.type==='toxic'){
-      mon.status.toxicCounter = (mon.status.toxicCounter||1)+1;
-      const pct = 0.0625 * mon.status.toxicCounter;
-      const dmg = Math.max(1, Math.floor(mon.stats.hp*Math.min(pct,0.9375)));
-      mon.currentHp = Math.max(0, mon.currentHp-dmg);
-      io.to(room).emit('status-tick', { side, type:'toxic', damage:dmg, stacks: mon.status.toxicCounter });
-    }
-  }
-  // Burn
-  for(const side of ['player1','player2']){
-    const mon = state.teams[side][state.active[side]];
-    if(!mon || mon.currentHp<=0) continue;
-    if(mon.status?.type==='burn'){
-      const dmg = Math.max(1, Math.floor(mon.stats.hp*0.0625));
-      mon.currentHp = Math.max(0, mon.currentHp-dmg);
-      io.to(room).emit('status-tick', { side, type:'burn', damage:dmg });
-    }
-  }
-  // Weather chip
-  for(const side of ['player1','player2']){
-    const mon = state.teams[side][state.active[side]];
-    if(!mon || mon.currentHp<=0) continue;
-    const w=state.field.weather?.type;
-    if(w==='sand'){
-      const immune = mon.types.some(t=>['rock','ground','steel'].includes(t));
-      if(!immune){ const dmg=Math.max(1,Math.floor(mon.stats.hp*0.0625)); mon.currentHp=Math.max(0,mon.currentHp-dmg); io.to(room).emit('weather-chip',{ side,type:'sand',damage:dmg }); }
-    } else if(w==='hail'){
-      const immune = mon.types.includes('ice');
-      if(!immune){ const dmg=Math.max(1,Math.floor(mon.stats.hp*0.0625)); mon.currentHp=Math.max(0,mon.currentHp-dmg); io.to(room).emit('weather-chip',{ side,type:'hail',damage:dmg }); }
-    }
-  }
-  // Sleep decrement
-  for(const side of ['player1','player2']){
-    const mon = state.teams[side][state.active[side]];
-    if(!mon?.status) continue;
-    if(mon.status.type==='sleep'){
-      mon.status.turnsLeft = Math.max(0,(mon.status.turnsLeft||0)-1);
-      if(mon.status.turnsLeft===0) mon.status=null;
-    }
-  }
-  // Weather/Terrain duration
-  if(state.field.weather?.type){ state.field.weather.turns -= 1; if(state.field.weather.turns<=0) state.field.weather={ type:null, turns:0 }; }
-  if(state.field.terrain?.type){ state.field.terrain.turns -= 1; if(state.field.terrain.turns<=0) state.field.terrain={ type:null, turns:0 }; }
-}
-
-// --------- Logging / Replay ----------
-function logEvent(state, ev){ state.eventLog.push({ t: Date.now(), ...ev }); }
-function finalizeReplay(state){
-  const id = `${state.room}-${Math.random().toString(36).slice(2,8)}`;
-  replays.set(id, {
-    id,
-    seed: state.seed || null,
-    log: state.eventLog,
-    meta: { winner: state.winner, startedAt: state.startedAt, endedAt: Date.now(), gens: state.gens },
-    teams: state.teams
+function buildPokemonFromApi(pokemon, moves) {
+  const stats = {};
+  pokemon.stats.forEach(s => {
+    stats[s.stat.name] = s.base_stat;
   });
-  return id;
-}
-export function getReplay(id){ return replays.get(id) || null; }
-
-// --------- Timer ----------
-function clearTurnTimer(state){
-  if(state.turnTimer?.id){ clearTimeout(state.turnTimer.id); state.turnTimer.id=null; }
-}
-function startTurnTimer(io, room){
-  const state = rooms.get(room); if(!state || state.over) return;
-  clearTurnTimer(state);
-  state.turnTimer = { seconds: state.turnTimer?.duration || 60, duration: state.turnTimer?.duration || 60, id: null };
-  // simple countdown tick to clients
-  const tick = () => {
-    if(state.over) return clearTurnTimer(state);
-    state.turnTimer.seconds -= 1;
-    io.to(room).emit('timer', { seconds: state.turnTimer.seconds, turnOwner: state.turnOwner });
-    if(state.turnTimer.seconds <= 0){
-      clearTurnTimer(state);
-      // Auto-Move bei Timeout: wähle ersten verfügbaren Move (mit PP) oder Struggle
-      autoTimeoutMove(io, room, state.turnOwner);
-    } else {
-      state.turnTimer.id = setTimeout(tick, 1000);
-    }
+  const level = 50;
+  const maxHp = calcStat(stats.hp, level, true);
+  return {
+    id: pokemon.id,
+    name: pokemon.name,
+    types: pokemon.types.map(t => t.type.name),
+    stats: {
+      hp: maxHp,
+      atk: calcStat(stats.attack, level, false),
+      def: calcStat(stats.defense, level, false),
+      spa: calcStat(stats['special-attack'], level, false),
+      spd: calcStat(stats['special-defense'], level, false),
+      spe: calcStat(stats.speed, level, false)
+    },
+    level,
+    moves,
+    ability: chooseAbility(pokemon.abilities),
+    item: chooseItem(pokemon),
+    status: null,
+    statusTurns: 0,
+    hp: maxHp,
+    maxHp,
+    fainted: false,
+    stages: { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, acc: 0, eva: 0 },
+    itemUsed: false,
+    flashFire: false,
+    volatiles: {
+      protect: false,
+      seeded: false,
+      seedSource: null,
+      confusion: 0,
+      flinch: false,
+      substitute: 0,
+      taunt: 0,
+      encoreMove: null,
+      encoreTurns: 0
+    },
+    lastMove: null
   };
-  io.to(room).emit('timer', { seconds: state.turnTimer.seconds, turnOwner: state.turnOwner });
-  state.turnTimer.id = setTimeout(tick, 1000);
 }
 
-// --------- Core Turn Engine ----------
-async function executeAction(io, room, side, action){
-  const state = rooms.get(room); if(!state || state.over) return;
-  const opp = side==='player1'?'player2':'player1';
-  const atkMon = state.teams[side][state.active[side]];
-  if(atkMon.currentHp<=0) return;
-  clearTurnTimer(state);
-
-  state.phase='acting';
-  io.to(room).emit('turn-state', { phase: state.phase, turnOwner: state.turnOwner });
-  logEvent(state, { type:'phase', phase:'acting' });
-
-  // Sleep skip
-  if(atkMon.status?.type==='sleep'){
-    io.to(room).emit('message', `💤 ${atkMon.name} schläft und kann nicht angreifen.`);
-    logEvent(state, { type:'sleep-skip', side });
-    await sleep(300);
-  }
-  // Freeze 20% thaw
-  else if(atkMon.status?.type==='freeze'){
-    if(rnd()<0.2){ atkMon.status=null; io.to(room).emit('message', `❄️ ${atkMon.name} taut auf!`); logEvent(state,{ type:'thaw', side }); await sleep(250); }
-    else { io.to(room).emit('message', `❄️ ${atkMon.name} ist eingefroren und kann sich nicht bewegen.`); logEvent(state,{ type:'freeze-skip', side }); await sleep(300); }
-  }
-
-  if(action.type==='switch'){
-    const to=action.index, team=state.teams[side];
-    if(to>=0 && to<team.length && team[to].currentHp>0 && to!==state.active[side]){
-      state.active[side]=to; onSwitchIn(state, side);
-      io.to(room).emit('switch-ok', { side, toIndex: to });
-      io.to(room).emit('message', `🔄 ${side} wechselt zu ${team[to].name}.`);
-      logEvent(state, { type:'switch', side, to });
-      await sleep(300);
-    }
-  } else if(action.type==='move'){
-    // Choice Scarf Lock
-    if(atkMon.item==='choice-scarf'){
-      if(atkMon.choiceLock && atkMon.moves[action.index]?.name !== atkMon.choiceLock){
-        io.to(room).emit('error-message','Choice-Lock aktiv.');
-        state.phase='select'; io.to(room).emit('turn-state', { phase: state.phase, turnOwner: state.turnOwner }); startTurnTimer(io, room);
-        return;
-      }
-      if(!atkMon.choiceLock) atkMon.choiceLock = atkMon.moves[action.index]?.name || null;
-    }
-
-    const defender = state.teams[opp][state.active[opp]];
-    const mv = atkMon.moves[action.index];
-
-    // PP Check / Struggle
-    if(mv && mv.currentPP<=0){
-      io.to(room).emit('error-message','Keine PP!'); // Client blockt meist schon
-      state.phase='select'; io.to(room).emit('turn-state', { phase: state.phase, turnOwner: state.turnOwner }); startTurnTimer(io, room);
-      return;
-    }
-
-    // Paralysis: 25% full para
-    if(atkMon.status?.type==='paralysis' && rnd()<0.25){
-      io.to(room).emit('message', `⚡ ${atkMon.name} ist paralysiert und kann sich nicht bewegen!`);
-      logEvent(state, { type:'full-para', side });
-      await sleep(250);
-    } else if(mv?.category==='status'){
-      // Named utility (stages, hazards, weather/terrain)
-      const name = mv.name;
-      if(name==='swords-dance'){ atkMon.stages.atk = clamp(atkMon.stages.atk+2,-6,6); io.to(room).emit('message',`🗡️ ${atkMon.name}s Angriff steigt stark!`); }
-      else if(name==='growl'){ defender.stages.atk = clamp(defender.stages.atk-1,-6,6); io.to(room).emit('message',`📢 Angriff von ${defender.name} sinkt!`); }
-      else if(name==='calm-mind'){ atkMon.stages.spa=clamp(atkMon.stages.spa+1,-6,6); atkMon.stages.spd=clamp(atkMon.stages.spd+1,-6,6); io.to(room).emit('message','🧠 Konzentration! SpA/SpD steigen.'); }
-      else if(name==='stealth-rock'){ addHazard(state, opp, 'stealthRock', 1, 1); io.to(room).emit('message','🪨 Tarnsteine liegen.'); }
-      else if(name==='spikes'){ addHazard(state, opp, 'spikes', 1, 3); io.to(room).emit('message','🧷 Stachler liegen.'); }
-      else if(name==='toxic-spikes'){ addHazard(state, opp, 'toxicSpikes', 1, 2); io.to(room).emit('message','☠️ Giftspitzen liegen.'); }
-      else if(name==='rain-dance'){ setWeather(state, 'rain', 5); io.to(room).emit('message','🌧️ Es begann zu regnen!'); }
-      else if(name==='sunny-day'){ setWeather(state, 'sun', 5); io.to(room).emit('message','☀️ Die Sonne brennt!'); }
-      else if(name==='sandstorm'){ setWeather(state, 'sand', 5); io.to(room).emit('message','🌪️ Sandsturm wütet!'); }
-      else if(name==='hail'){ setWeather(state, 'hail', 5); io.to(room).emit('message','🌨️ Hagel setzt ein!'); }
-      else if(name==='electric-terrain'){ setTerrain(state,'electric',5); io.to(room).emit('message','⚡ Elektrofeld!'); }
-      else if(name==='grassy-terrain'){ setTerrain(state,'grassy',5); io.to(room).emit('message','🌿 Grasfeld!'); }
-      mv.currentPP = Math.max(0, (mv.currentPP ?? mv.pp ?? 0) - 1);
-      logEvent(state, { type:'move-status', side, name });
-      await sleep(250);
-    } else {
-      // Wenn kein Move (z.B. alle PP 0) -> Struggle
-      let usingStruggle = false;
-      let moveToUse = mv;
-      if(!moveToUse){
-        usingStruggle = true;
-      } else {
-        // Accuracy mit Stages
-        const acc = (mv.accuracy ?? 100) * (stageMult(atkMon.stages.acc)/stageMult(defender.stages.eva));
-        // Ability Imms
-        if(defender.ability==='flash-fire' && mv.type==='fire'){
-          defender.abilityState.flashFireBoost = true; io.to(room).emit('message',`🔥 ${defender.name} absorbiert Feuer!`); logEvent(state,{ type:'flash-fire', target: 'defender' });
-          moveToUse = null;
-        } else if(defender.ability==='levitate' && mv.type==='ground'){
-          io.to(room).emit('message',`🌀 ${defender.name} ist immun gegen Boden!`); logEvent(state,{ type:'levitate-immune' });
-          moveToUse = null;
-        } else if(rnd()*100 > acc){
-          io.to(room).emit('move-missed', { side, move: mv.name, target: opp }); logEvent(state,{ type:'miss', side, name: mv.name });
-          moveToUse = null;
-        }
-      }
-
-      if(!moveToUse){
-        // keine Wirkung / Miss → kein Schaden, PP nur verbrauchen wenn Move existiert
-        if(mv) mv.currentPP = Math.max(0, (mv.currentPP ?? mv.pp ?? 0) - 1);
-        await sleep(250);
-      } else if(usingStruggle || (mv && mv.power>0)){
-        // Struggle-Ersatz falls benötigt
-        const use = usingStruggle ? { name:'struggle', power:50, type:'normal', category:'physical', accuracy:100, priority:0 } : mv;
-
-        // PP -1
-        if(!usingStruggle) use.currentPP = Math.max(0, (use.currentPP ?? use.pp ?? 0) - 1);
-
-        const result = calcDamage(atkMon, defender, use, state);
-        let dmg = result.dmg;
-
-        // Focus Sash
-        if(defender.item==='focus-sash' && defender.currentHp===defender.stats.hp && dmg>=defender.currentHp){
-          dmg = defender.currentHp - 1; defender.item = null;
-          io.to(room).emit('message',`🎗️ Focus Sash rettet ${defender.name}!`);
-        }
-
-        defender.currentHp = Math.max(0, defender.currentHp - dmg);
-        io.to(room).emit('move-made', { side, move: use.name, damage: dmg, target: opp, effectiveness: result.eff, crit: result.crit, stab: 1 });
-        logEvent(state, { type:'move', side, name: use.name, dmg });
-
-        await sleep(320);
-
-        // Ailments Chance
-        if(mv && mv.ailment){
-          const terrainBlocksSleep = state.field.terrain?.type==='electric' && grounded(defender);
-          if(!defender.status?.type && rnd()*100 < (mv.ailmentChance||0)){
-            const map={ burn:'burn', paralysis:'paralysis', poison:'poison', sleep:'sleep', freeze:'freeze' };
-            const n = map[mv.ailment];
-            if(!(n==='sleep' && terrainBlocksSleep) && n){
-              defender.status = n==='sleep' ? { type:'sleep', turnsLeft: Math.floor(rnd()*3)+1 } : { type:n };
-              io.to(room).emit('status-applied', { target: opp, type: defender.status.type });
-              logEvent(state, { type:'status', target: opp, status: defender.status.type });
-              await sleep(200);
-            }
-          }
-        }
-
-        // Life Orb recoil
-        if(atkMon.item==='life-orb'){
-          const recoil = Math.max(1, Math.floor(atkMon.stats.hp*0.1));
-          atkMon.currentHp = Math.max(0, atkMon.currentHp - recoil);
-          io.to(room).emit('message',`🩸 ${atkMon.name} erleidet Life Orb Rückstoß (${recoil}).`);
-        }
-
-        // Struggle recoil 25% max HP
-        if(usingStruggle){
-          const r = Math.max(1, Math.floor(atkMon.stats.hp*0.25));
-          atkMon.currentHp = Math.max(0, atkMon.currentHp - r);
-          io.to(room).emit('message',`😣 Rückstoß durch Struggle (${r}).`);
-        }
-
-        // KO / Auto-Switch
-        if(defender.currentHp===0){
-          io.to(room).emit('pokemon-fainted', { fainted: defender.name, target: opp }); logEvent(state,{ type:'ko', target: opp });
-          await sleep(250);
-          const switched = autoSwitchIfNeeded(state, opp);
-          if(switched!==null){
-            io.to(room).emit('switch-ok', { side: opp, toIndex: switched });
-            io.to(room).emit('message',`⚠️ ${opp} sendet ${state.teams[opp][switched].name}!`);
-          } else if(checkBattleEnd(state)){
-            const repId = finalizeReplay(state);
-            io.to(room).emit('battle-end', { winner: state.winner, replayId: repId });
-            logEvent(state,{ type:'end', winner: state.winner, replayId: repId });
-            return;
-          }
-        }
-      }
-    }
-  }
-
-  // End-of-Turn
-  endOfTurn(state, io, room);
-  if(checkBattleEnd(state)){
-    const repId = finalizeReplay(state);
-    io.to(room).emit('battle-end', { winner: state.winner, replayId: repId });
-    logEvent(state,{ type:'end', winner: state.winner, replayId: repId });
-    return;
-  }
-
-  io.to(room).emit('turn-end', {}); logEvent(state,{ type:'turn-end' });
-  state.phase='select'; toggleTurn(state);
-  io.to(room).emit('turn-state', { phase: state.phase, turnOwner: state.turnOwner });
-  io.to(room).emit('state-update', getRoomSnapshot(room));
-  startTurnTimer(io, room);
-
-  // Bot
-  if(state.mode==='bot' && state.turnOwner==='player2' && !state.over){
-    await sleep(350);
-    const bot = decideBotAction(state);
-    await executeAction(io, room, 'player2', bot);
-  }
+function normalizeMove(moveData) {
+  return {
+    name: moveData.name,
+    type: moveData.type?.name || 'normal',
+    power: moveData.power || 0,
+    accuracy: moveData.accuracy ?? 100,
+    pp: moveData.pp || 10,
+    currentPP: moveData.pp || 10,
+    category: moveData.damage_class?.name || 'physical',
+    priority: moveData.priority || 0,
+    target: moveData.target?.name || 'selected-pokemon',
+    stat_changes: moveData.stat_changes || [],
+    meta: moveData.meta || {},
+    flags: (moveData.flags || []).map((f) => f.name)
+  };
 }
 
-function autoSwitchIfNeeded(state, side){
-  const team=state.teams[side]; const idx=state.active[side];
-  if(team[idx].currentHp>0) return null;
-  for(let i=0;i<team.length;i++){ if(team[i].currentHp>0){ state.active[side]=i; onSwitchIn(state, side); return i; } }
+function mapAilment(ailment) {
+  if (!ailment || ailment === 'none') return null;
+  if (['paralysis', 'burn', 'poison', 'sleep', 'freeze', 'toxic'].includes(ailment)) return ailment;
+  if (ailment === 'confusion') return 'confusion';
   return null;
 }
 
-function decideBotAction(state){
-  const side='player2', opp='player1';
-  const atk=state.teams[side][state.active[side]], def=state.teams[opp][state.active[opp]];
-  if(atk.currentHp/atk.stats.hp<0.3 && rnd()<0.2){
-    for(let i=0;i<state.teams[side].length;i++){ if(i!==state.active[side] && state.teams[side][i].currentHp>0) return { type:'switch', index:i }; }
+async function generateRandomTeam(genList) {
+  const team = [];
+  const gens = genList?.length ? genList : [randInt(1, 9)];
+  while (team.length < 6) {
+    const gen = pickRandom(gens);
+    const range = GEN_RANGES[gen] || GEN_RANGES[1];
+    const id = randInt(range[0], range[1]);
+    const data = await getPokemonById(id);
+    const moves = await pickRealMoves(data);
+    const mon = buildPokemonFromApi(data, moves);
+    team.push(mon);
   }
-  let best=0,bestScore=-1e9;
-  atk.moves.forEach((m,i)=>{
-    let sc=0;
-    if(m.category==='status'){
-      sc=15; if(m.name==='swords-dance') sc+=10; if(m.name==='stealth-rock'||m.name==='spikes'||m.name==='toxic-spikes') sc+=14; if(m.name==='calm-mind') sc+=8;
-    } else {
-      const eff = typeMultiplier(m.type, def.types);
-      sc = (m.power||40)*eff + (m.accuracy||100)/10 + (m.priority||0)*5;
-    }
-    if((m.currentPP??0)<=0) sc -= 999;
-    if(sc>bestScore){ bestScore=sc; best=i; }
-  });
-  // Wenn alles 0 PP → Struggle (move index -1)
-  if(atk.moves.every(m=>(m.currentPP??0)<=0)) return { type:'move', index: -1 };
-  return { type:'move', index: best };
+  return team;
 }
 
-// --------- Public API ----------
-export function getRoomSnapshot(room){
-  const s=rooms.get(room); if(!s) return null;
+function makeSide(name, team) {
   return {
-    room: s.room, gens: s.gens, phase:s.phase, teams:s.teams, active:s.active,
-    over:!!s.over, winner:s.winner??null, turnOwner:s.turnOwner,
-    field: s.field, sideConditions: s.sideConditions,
-    timer: { seconds: s.turnTimer?.seconds ?? null }
+    name,
+    team,
+    active: 0,
+    hazards: { spikes: 0, stealthRock: false, toxicSpikes: 0 },
+    choiceLock: null,
+    forfeited: false
   };
 }
 
-export async function startPvpQuickMatch(io, socket, gens=1, customTeamLite=null){
-  const room=`pvp-${socket.id}-${Math.random().toString(36).slice(2,8)}`;
-  const p1 = customTeamLite ? await materializeTeamFromLite(customTeamLite, gens) : await generateTeam(gens,6);
-  const p2 = await generateTeam(gens,6);
-  const state = {
-    room, gens: normalizeGens(gens), mode:'pvp',
-    teams:{ player1:p1, player2:p2 }, active:{ player1:0, player2:0 },
-    over:false, winner:null, phase:'select', turnOwner:'player1',
-    field:{ weather:{ type:null, turns:0 }, terrain:{ type:null, turns:0 } },
-    sideConditions:{ player1:{}, player2:{} },
-    eventLog:[], startedAt: Date.now(),
-    turnTimer: { seconds:60, duration:60, id:null }
-  };
-  rooms.set(room, state);
-  socket.join(room);
-  onSwitchIn(state,'player1'); onSwitchIn(state,'player2');
-  io.to(room).emit('battle-start', getRoomSnapshot(room));
-  startTurnTimer(io, room);
+function currentActive(side) {
+  return side.team[side.active];
 }
 
-export async function startBotBattle(io, socket, gens=1, customTeamLite=null){
-  const room=`bot-${socket.id}`;
-  const p1 = customTeamLite ? await materializeTeamFromLite(customTeamLite, gens) : await generateTeam(gens,6);
-  const p2 = await generateTeam(gens,6);
-  const state = {
-    room, gens: normalizeGens(gens), mode:'bot',
-    teams:{ player1:p1, player2:p2 }, active:{ player1:0, player2:0 },
-    over:false, winner:null, phase:'select', turnOwner:'player1',
-    field:{ weather:{ type:null, turns:0 }, terrain:{ type:null, turns:0 } },
-    sideConditions:{ player1:{}, player2:{} },
-    eventLog:[], startedAt: Date.now(),
-    turnTimer: { seconds:60, duration:60, id:null }
-  };
-  rooms.set(room, state);
-  socket.join(room);
-  onSwitchIn(state,'player1'); onSwitchIn(state,'player2');
-  io.to(room).emit('battle-start', getRoomSnapshot(room));
-  startTurnTimer(io, room);
+function otherSide(room, sideKey) {
+  return sideKey === 'p1' ? room.sides.p2 : room.sides.p1;
 }
 
-export function clientRequestSnapshot(io, socket, room){
-  const snap=getRoomSnapshot(room); if(snap) socket.emit('state-update', snap);
+function getSpeed(mon, side) {
+  if (!mon) return 0;
+  let speed = mon.stats.spe * stageMultiplier(mon.stages.spe);
+  if (mon.status === 'paralysis') speed *= 0.5;
+  if (mon.item === 'choice-scarf') speed *= 1.5;
+  return speed;
 }
 
-export async function clientLockAction(io, socket, payload){
-  const { room, side='player1', type, index } = payload||{};
-  const state=rooms.get(room); if(!state||state.over) return;
-  if(state.phase!=='select'){ io.to(room).emit('error-message','Nur in Auswahlphase.'); return; }
-  if(state.turnOwner!==side){ io.to(room).emit('error-message','Nicht dein Zug.'); return; }
-  if(type==='switch'){
-    const t=state.teams[side]; if(index<0||index>=t.length) return io.to(room).emit('error-message','Ungültiger Wechselindex.');
-    if(t[index].currentHp<=0) return io.to(room).emit('error-message','Pokémon ist kampfunfähig.');
-    if(state.active[side]===index) return io.to(room).emit('error-message','Bereits aktiv.');
-    await executeAction(io, room, side, { type:'switch', index });
-  } else if(type==='move'){
-    await executeAction(io, room, side, { type:'move', index });
-  } else io.to(room).emit('error-message','Unbekannte Aktion.');
+function calcDamage(attacker, defender, move, weather, terrain) {
+  if (!move || move.power === 0) return 0;
+  const level = attacker.level;
+  let atkStat = move.category === 'special' ? attacker.stats.spa : attacker.stats.atk;
+  const defStat = move.category === 'special' ? defender.stats.spd : defender.stats.def;
+  const atkMod = stageMultiplier(attacker.stages[move.category === 'special' ? 'spa' : 'atk']);
+  const defMod = stageMultiplier(defender.stages[move.category === 'special' ? 'spd' : 'def']);
+  const base = Math.floor((((2 * level) / 5 + 2) * move.power * (atkStat * atkMod) / (defStat * defMod)) / 50) + 2;
+  const stab = attacker.types.includes(move.type) ? 1.5 : 1;
+  let typeEff = getTypeEffect(move.type, defender.types);
+  if (defender.ability === 'levitate' && move.type === 'ground') typeEff = 0;
+  if (typeEff === 0) return 0;
+  let weatherMod = 1;
+  if (weather === 'rain' && move.type === 'water') weatherMod = 1.5;
+  if (weather === 'sun' && move.type === 'fire') weatherMod = 1.5;
+  if (terrain === 'grassy' && move.type === 'grass') weatherMod *= 1.3;
+  if (terrain === 'electric' && move.type === 'electric') weatherMod *= 1.3;
+  if (terrain === 'psychic' && move.type === 'psychic') weatherMod *= 1.3;
+  if (terrain === 'misty' && move.type === 'fairy') weatherMod *= 1.3;
+  if (attacker.ability === 'overgrow' && attacker.hp / attacker.maxHp <= 1 / 3 && move.type === 'grass') weatherMod *= 1.5;
+  if (attacker.ability === 'blaze' && attacker.hp / attacker.maxHp <= 1 / 3 && move.type === 'fire') weatherMod *= 1.5;
+  if (attacker.ability === 'torrent' && attacker.hp / attacker.maxHp <= 1 / 3 && move.type === 'water') weatherMod *= 1.5;
+  if (attacker.ability === 'flash-fire' && attacker.flashFire && move.type === 'fire') weatherMod *= 1.5;
+  if (attacker.ability === 'guts' && attacker.status && move.category === 'physical') atkStat *= 1.5;
+  if (attacker.status === 'burn' && attacker.ability !== 'guts' && move.category === 'physical') weatherMod *= 0.5;
+  const crit = Math.random() < 0.0625 ? 1.5 : 1;
+  const rand = 0.85 + Math.random() * 0.15;
+  return Math.max(1, Math.floor(base * stab * typeEff * weatherMod * crit * rand));
 }
 
-// manuelles Forfeit
-export function clientForfeit(io, room, side){
-  const state=rooms.get(room); if(!state||state.over) return;
-  state.over=true; state.winner = side==='player1' ? 'player2' : 'player1';
-  const repId = finalizeReplay(state);
-  io.to(room).emit('battle-end', { winner: state.winner, replayId: repId, forfeit: side });
+function applyStatus(side, target, status) {
+  if (target.status) return false;
+  if ((status === 'poison' || status === 'toxic') && target.types.some(t => t === 'poison' || t === 'steel')) return false;
+  if (status === 'burn' && target.types.includes('fire')) return false;
+  if (status === 'freeze' && target.types.includes('ice')) return false;
+  target.status = status;
+  if (status === 'sleep') target.statusTurns = randInt(1, 3);
+  if (status === 'freeze') target.statusTurns = randInt(1, 3);
+  if (status === 'toxic') target.statusTurns = 1;
+  return true;
 }
 
-// Rematch (gleiche Gens, neue Teams)
-export async function clientRematch(io, room){
-  const old=rooms.get(room); if(!old) return;
-  const gens = old.gens;
-  // reset with fresh teams (Custom-Team wird hier NICHT automatisch erneut verwendet)
-  const p1=await generateTeam(gens,6), p2=await generateTeam(gens,6);
-  const state = {
-    room, gens, mode: old.mode, teams:{ player1:p1, player2:p2 }, active:{ player1:0, player2:0 },
-    over:false, winner:null, phase:'select', turnOwner:'player1',
-    field:{ weather:{ type:null, turns:0 }, terrain:{ type:null, turns:0 } },
-    sideConditions:{ player1:{}, player2:{} },
-    eventLog:[], startedAt: Date.now(),
-    turnTimer: { seconds:60, duration:60, id:null }
-  };
-  rooms.set(room, state);
-  onSwitchIn(state,'player1'); onSwitchIn(state,'player2');
-  io.to(room).emit('battle-start', getRoomSnapshot(room));
-  startTurnTimer(io, room);
-}
-
-// Spectator
-export function addSpectator(io, socket, room){
-  const state=rooms.get(room); if(!state) return socket.emit('error-message','Room existiert nicht');
-  socket.join(room);
-  socket.emit('state-update', getRoomSnapshot(room));
-  socket.emit('message', '👀 Du schaust zu (Spectator).');
-}
-
-// Timeout: Auto-Action (Move oder Struggle)
-function autoTimeoutMove(io, room, side){
-  const state=rooms.get(room); if(!state||state.over) return;
-  const atk = state.teams[side][state.active[side]];
-  let idx = atk.moves.findIndex(m=>(m.currentPP??0)>0);
-  if(idx<0) idx = -1; // Struggle
-  executeAction(io, room, side, { type:'move', index: idx });
-}
-
-// ---------- Team Import/Export (Showdown-Lite) + Legality ----------
-export function parseShowdownLite(text=''){
-  // Sehr simple Heuristik: Zeilen mit Namen + "@" Item, darunter bis zu 4 Moves mit "- "
-  // Abilities optional via "Ability: X"
-  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-  const team=[]; let current=null;
-  for(const ln of lines){
-    if(ln.startsWith('- ')){
-      const mv = ln.slice(2).toLowerCase().replace(/\s+/g,'-');
-      if(current && current.moves.length<4) current.moves.push({ name: mv });
-      continue;
+function endOfTurn(room, log) {
+  for (const key of ['p1', 'p2']) {
+    const side = room.sides[key];
+    const mon = currentActive(side);
+    if (!mon || mon.fainted) continue;
+    if (mon.item === 'leftovers') {
+      const heal = Math.max(1, Math.floor(mon.maxHp * 0.0625));
+      mon.hp = clamp(mon.hp + heal, 0, mon.maxHp);
+      log.push({ type: 'item-heal', side: key, amount: heal });
     }
-    if(/^ability:/i.test(ln)){
-      const ab = ln.split(':')[1].trim().toLowerCase().replace(/\s+/g,'-');
-      if(current) current.ability = ab;
-      continue;
+    if (mon.status === 'burn' || mon.status === 'poison') {
+      const dmg = Math.max(1, Math.floor(mon.maxHp * 0.0625));
+      applyDamage(mon, dmg, log);
+      log.push({ type: 'status-tick', side: key, status: mon.status, amount: dmg });
     }
-    if(ln.includes('@')){
-      const [name, item] = ln.split('@').map(s=>s.trim());
-      if(current) team.push(current);
-      current = { species: name.toLowerCase(), item: item.toLowerCase().replace(/\s+/g,'-'), ability:null, moves:[] };
+    if (mon.status === 'toxic') {
+      const dmg = Math.max(1, Math.floor(mon.maxHp * 0.0625 * mon.statusTurns));
+      applyDamage(mon, dmg, log);
+      mon.statusTurns += 1;
+      log.push({ type: 'status-tick', side: key, status: 'toxic', amount: dmg });
+    }
+    if (mon.volatiles?.seeded) {
+      const dmg = Math.max(1, Math.floor(mon.maxHp * 0.125));
+      applyDamage(mon, dmg, log);
+      log.push({ type: 'status-tick', side: key, status: 'leech-seed', amount: dmg });
+      const sourceKey = mon.volatiles.seedSource;
+      const sourceSide = sourceKey ? room.sides[sourceKey] : null;
+      const sourceMon = sourceSide ? currentActive(sourceSide) : null;
+      if (sourceMon && !sourceMon.fainted) {
+        sourceMon.hp = clamp(sourceMon.hp + dmg, 0, sourceMon.maxHp);
+        log.push({ type: 'item-heal', side: sourceKey, amount: dmg });
+      }
+    }
+    if (mon.volatiles?.taunt > 0) mon.volatiles.taunt -= 1;
+    if (mon.volatiles?.encoreTurns > 0) {
+      mon.volatiles.encoreTurns -= 1;
+      if (mon.volatiles.encoreTurns <= 0) mon.volatiles.encoreMove = null;
+    }
+    if (mon.volatiles?.confusion > 0) mon.volatiles.confusion -= 1;
+  }
+}
+
+function applyHazards(sideKey, side, mon, log) {
+  if (!mon || mon.fainted) return;
+  if (side.hazards.stealthRock) {
+    const eff = getTypeEffect('rock', mon.types);
+    const dmg = Math.max(1, Math.floor(mon.maxHp * 0.125 * eff));
+    applyDamage(mon, dmg, log);
+    log.push({ type: 'hazard', side: sideKey, hazard: 'stealth-rock', amount: dmg });
+  }
+  if (side.hazards.spikes > 0) {
+    const dmg = Math.max(1, Math.floor(mon.maxHp * (0.041 * side.hazards.spikes)));
+    applyDamage(mon, dmg, log);
+    log.push({ type: 'hazard', side: sideKey, hazard: 'spikes', amount: dmg });
+  }
+  if (side.hazards.toxicSpikes > 0) {
+    if (mon.types.includes('poison')) {
+      side.hazards.toxicSpikes = 0;
+      log.push({ type: 'message', text: 'Toxic spikes absorbed.' });
     } else {
-      // neue Zeile ohne @ -> neuer Slot (ohne Item)
-      if(current) team.push(current);
-      current = { species: ln.toLowerCase(), item:null, ability:null, moves:[] };
+      const status = side.hazards.toxicSpikes > 1 ? 'toxic' : 'poison';
+      if (applyStatus(side, mon, status)) {
+        log.push({ type: 'status-applied', side: sideKey, status });
+      }
     }
   }
-  if(current) team.push(current);
-  if(team.length===0) throw new Error('Kein Team erkannt.');
-  return team.slice(0,6);
 }
 
-export function exportShowdownLite(team=[]){
-  return (team||[]).map(slot=>{
-    const name = (slot.species||'pokemon').replace(/-/g,' ');
-    const item = slot.item ? ` @ ${slot.item.replace(/-/g,' ')}` : '';
-    const ability = slot.ability ? `\nAbility: ${slot.ability.replace(/-/g,' ')}` : '';
-    const moves = (slot.moves||[]).slice(0,4).map(m=>`- ${m.name?.replace(/-/g,' ')}`).join('\n');
-    return `${name}${item}${ability}${moves?'\n'+moves:''}`;
+function isBattleOver(room) {
+  const p1Alive = room.sides.p1.team.some(p => !p.fainted);
+  const p2Alive = room.sides.p2.team.some(p => !p.fainted);
+  if (!p1Alive || !p2Alive) return true;
+  return false;
+}
+
+function decideWinner(room) {
+  const p1Alive = room.sides.p1.team.some(p => !p.fainted);
+  const p2Alive = room.sides.p2.team.some(p => !p.fainted);
+  if (p1Alive && !p2Alive) return 'p1';
+  if (p2Alive && !p1Alive) return 'p2';
+  return null;
+}
+
+function getRoomSnapshot(room) {
+  return {
+    id: room.id,
+    turn: room.turn,
+    weather: room.weather,
+    terrain: room.terrain,
+    sides: {
+      p1: {
+        name: room.sides.p1.name,
+        active: room.sides.p1.active,
+        team: room.sides.p1.team,
+        hazards: room.sides.p1.hazards,
+        choiceLock: room.sides.p1.choiceLock
+      },
+      p2: {
+        name: room.sides.p2.name,
+        active: room.sides.p2.active,
+        team: room.sides.p2.team,
+        hazards: room.sides.p2.hazards,
+        choiceLock: room.sides.p2.choiceLock
+      }
+    },
+    log: room.log.slice(-40),
+    winner: room.winner,
+    battleOver: room.battleOver
+  };
+}
+
+function finalizeReplay(room) {
+  const id = `${room.id}-${Date.now()}`;
+  const replay = { meta: room.meta, log: room.eventLog, teams: { p1: room.sides.p1.team, p2: room.sides.p2.team } };
+  replays.set(id, replay);
+  return id;
+}
+
+function getReplay(id) {
+  return replays.get(id);
+}
+
+function createRoom(genList, p1Name, p2Name, team1, team2) {
+  const id = `room-${Math.random().toString(36).slice(2, 10)}`;
+  const room = {
+    id,
+    createdAt: Date.now(),
+    turn: 1,
+    weather: null,
+    terrain: null,
+    sides: {
+      p1: makeSide(p1Name, team1),
+      p2: makeSide(p2Name, team2)
+    },
+    actions: {},
+    timer: null,
+    winner: null,
+    battleOver: false,
+    log: [],
+    eventLog: [],
+    meta: { genList: genList || [1], createdAt: Date.now() }
+  };
+  rooms.set(id, room);
+  return room;
+}
+
+function enqueue(room, event) {
+  room.eventLog.push(event);
+  room.log.push(event);
+}
+
+function lockAction(room, side, action) {
+  room.actions[side] = action;
+}
+
+function autoMove(room, sideKey) {
+  const side = room.sides[sideKey];
+  const mon = currentActive(side);
+  if (!mon || mon.fainted) return { type: 'switch', index: side.team.findIndex(p => !p.fainted) };
+  const move = mon.moves.find(m => m.currentPP > 0) || { name: 'struggle', type: 'normal', power: 50, accuracy: 100, pp: 999, currentPP: 999, category: 'physical', priority: 0 };
+  return { type: 'move', index: mon.moves.indexOf(move), move };
+}
+
+function chooseBotAction(room, sideKey) {
+  const side = room.sides[sideKey];
+  const mon = currentActive(side);
+  if (!mon || mon.fainted) {
+    const idx = side.team.findIndex(p => !p.fainted);
+    return { type: 'switch', index: idx };
+  }
+  const opponentSide = otherSide(room, sideKey);
+  const opponent = currentActive(opponentSide);
+  let best = null;
+  for (let i = 0; i < mon.moves.length; i += 1) {
+    const move = mon.moves[i];
+    if (move.currentPP <= 0) continue;
+    if (move.category === 'status') {
+      if (move.name === 'protect') {
+        if (!best) best = { type: 'move', index: i, move, score: 4 };
+        continue;
+      }
+      if (move.name === 'defog' && (side.hazards?.spikes || side.hazards?.stealthRock || side.hazards?.toxicSpikes || opponentSide.hazards?.spikes || opponentSide.hazards?.stealthRock || opponentSide.hazards?.toxicSpikes)) {
+        best = { type: 'move', index: i, move, score: 14 };
+        continue;
+      }
+      if (move.name === 'leech-seed' && !opponent.volatiles?.seeded) {
+        best = { type: 'move', index: i, move, score: 12 };
+        continue;
+      }
+      if (move.name === 'stealth-rock' && !opponentSide.hazards?.stealthRock) {
+        best = { type: 'move', index: i, move, score: 20 };
+        continue;
+      }
+      if (move.name === 'spikes' && opponentSide.hazards?.spikes < 3) {
+        best = { type: 'move', index: i, move, score: 18 };
+        continue;
+      }
+      if (move.name === 'toxic-spikes' && opponentSide.hazards?.toxicSpikes < 2) {
+        best = { type: 'move', index: i, move, score: 16 };
+        continue;
+      }
+      if (!best) best = { type: 'move', index: i, move, score: 5 };
+      continue;
+    }
+    const eff = getTypeEffect(move.type, opponent.types);
+    const power = getMovePower(move) * eff;
+    if (!best || power > best.score) best = { type: 'move', index: i, move, score: power };
+  }
+  if (best) {
+    if (best.move.category === 'status' && opponent.status) {
+      const fallback = mon.moves.findIndex(m => m.category !== 'status' && m.currentPP > 0);
+      if (fallback >= 0) return { type: 'move', index: fallback, move: mon.moves[fallback] };
+    }
+    return best;
+  }
+  return autoMove(room, sideKey);
+}
+
+function resolveSwitch(room, sideKey, index, log) {
+  const side = room.sides[sideKey];
+  if (index < 0 || index >= side.team.length) return false;
+  if (side.team[index].fainted) return false;
+  side.active = index;
+  side.choiceLock = null;
+  applyHazards(sideKey, side, currentActive(side), log);
+  const mon = currentActive(side);
+  if (mon?.ability === 'intimidate') {
+    const opp = otherSide(room, sideKey);
+    const oppMon = currentActive(opp);
+    if (oppMon) {
+      oppMon.stages.atk = clamp(oppMon.stages.atk - 1, -6, 6);
+      log.push({ type: 'status-applied', side: sideKey, status: 'intimidate' });
+    }
+  }
+  log.push({ type: 'switch-ok', side: sideKey, index });
+  return true;
+}
+
+function forceRandomSwitch(room, sideKey, log) {
+  const side = room.sides[sideKey];
+  const candidates = side.team.map((p, i) => ({ p, i })).filter(({ p, i }) => !p.fainted && i !== side.active);
+  if (candidates.length === 0) return false;
+  const pick = candidates[Math.floor(Math.random() * candidates.length)];
+  side.active = pick.i;
+  side.choiceLock = null;
+  applyHazards(sideKey, side, currentActive(side), log);
+  log.push({ type: 'switch-ok', side: sideKey, index: pick.i });
+  return true;
+}
+
+function resolveMove(room, sideKey, action, log) {
+  const side = room.sides[sideKey];
+  const opponentSide = otherSide(room, sideKey);
+  const attacker = currentActive(side);
+  const defender = currentActive(opponentSide);
+  if (!attacker || attacker.fainted) return;
+  let move = action.move || attacker.moves[action.index];
+  if (!move) return;
+  if (attacker.volatiles?.encoreMove) {
+    const encoreIndex = attacker.moves.findIndex(m => m.name === attacker.volatiles.encoreMove);
+    if (encoreIndex >= 0) move = attacker.moves[encoreIndex];
+  }
+  if (side.choiceLock && move.name !== side.choiceLock) {
+    const lockedIndex = attacker.moves.findIndex(m => m.name === side.choiceLock);
+    move = attacker.moves[lockedIndex] || move;
+  }
+  if (attacker.volatiles?.flinch) {
+    attacker.volatiles.flinch = false;
+    log.push({ type: 'status-tick', side: sideKey, status: 'flinch' });
+    return;
+  }
+  if (attacker.status === 'sleep') {
+    attacker.statusTurns -= 1;
+    log.push({ type: 'status-tick', side: sideKey, status: 'sleep' });
+    if (attacker.statusTurns <= 0) {
+      attacker.status = null;
+      log.push({ type: 'status-applied', side: sideKey, status: 'cured' });
+    } else {
+      return;
+    }
+  }
+  if (attacker.status === 'freeze') {
+    if (Math.random() < 0.2) {
+      attacker.status = null;
+      log.push({ type: 'status-applied', side: sideKey, status: 'cured' });
+    } else {
+      log.push({ type: 'status-tick', side: sideKey, status: 'freeze' });
+      return;
+    }
+  }
+  if (attacker.status === 'paralysis' && Math.random() < 0.25) {
+    log.push({ type: 'status-tick', side: sideKey, status: 'paralysis' });
+    return;
+  }
+  if (attacker.volatiles?.confusion > 0) {
+    if (Math.random() < 1 / 3) {
+      const selfHit = { name: 'confusion', type: 'normal', power: 40, accuracy: 100, category: 'physical', priority: 0 };
+      const dmg = calcDamage(attacker, attacker, selfHit, room.weather, room.terrain);
+      applyDamage(attacker, dmg, log);
+      log.push({ type: 'status-tick', side: sideKey, status: 'confusion', amount: dmg });
+      return;
+    }
+  }
+  if (move.currentPP <= 0 && move.name !== 'struggle') {
+    log.push({ type: 'message', text: `${attacker.name} has no PP left.` });
+    return;
+  }
+  if (move.name !== 'struggle') move.currentPP -= 1;
+  log.push({ type: 'move-made', side: sideKey, move: move.name });
+  attacker.lastMove = move.name;
+  const accuracy = move.accuracy ?? 100;
+  const accMod = accStageMultiplier(attacker.stages.acc) / accStageMultiplier(defender.stages.eva);
+  const finalAcc = clamp(accuracy * accMod, 1, 100);
+  const hitRoll = Math.random() * 100;
+  if (hitRoll > finalAcc) {
+    log.push({ type: 'miss', side: sideKey, move: move.name });
+    return;
+  }
+  const targetIsUser = move.target?.includes('user') || move.target?.includes('ally');
+  if (room.terrain === 'psychic' && move.priority > 0 && !targetIsUser) {
+    log.push({ type: 'message', text: 'Psychic Terrain blocked the priority move.' });
+    return;
+  }
+  if (move.category === 'status') {
+    const healMoves = new Set(['recover', 'roost', 'soft-boiled', 'morningsun', 'synthesis', 'moonlight']);
+    const fieldMoves = new Set([
+      'stealth-rock',
+      'spikes',
+      'toxic-spikes',
+      'rain-dance',
+      'sunny-day',
+      'sandstorm',
+      'hail',
+      'grassy-terrain',
+      'electric-terrain',
+      'psychic-terrain',
+      'misty-terrain',
+      'defog'
+    ]);
+
+    if (attacker.volatiles?.taunt > 0) {
+      log.push({ type: 'message', text: `${attacker.name} is taunted!` });
+      return;
+    }
+    const selfMoves = new Set(['protect', 'substitute', 'rest']);
+    if (defender.volatiles?.substitute > 0 && !selfMoves.has(move.name) && !healMoves.has(move.name) && !fieldMoves.has(move.name)) {
+      log.push({ type: 'message', text: `${defender.name}'s substitute blocked it!` });
+      return;
+    }
+    if (move.name === 'protect') {
+      attacker.volatiles.protect = true;
+      log.push({ type: 'status-applied', side: sideKey, status: 'protect' });
+      return;
+    }
+    if (move.name === 'stealth-rock') {
+      opponentSide.hazards.stealthRock = true;
+      log.push({ type: 'message', text: 'Stealth Rock scattered.' });
+    }
+    if (move.name === 'spikes') {
+      opponentSide.hazards.spikes = clamp(opponentSide.hazards.spikes + 1, 0, 3);
+      log.push({ type: 'message', text: 'Spikes scattered.' });
+    }
+    if (move.name === 'toxic-spikes') {
+      opponentSide.hazards.toxicSpikes = clamp(opponentSide.hazards.toxicSpikes + 1, 0, 2);
+      log.push({ type: 'message', text: 'Toxic spikes scattered.' });
+    }
+    if (move.name === 'rain-dance') {
+      room.weather = 'rain';
+      log.push({ type: 'weather-chip', weather: 'rain' });
+    }
+    if (move.name === 'sunny-day') {
+      room.weather = 'sun';
+      log.push({ type: 'weather-chip', weather: 'sun' });
+    }
+    if (move.name === 'sandstorm') {
+      room.weather = 'sand';
+      log.push({ type: 'weather-chip', weather: 'sand' });
+    }
+    if (move.name === 'hail') {
+      room.weather = 'hail';
+      log.push({ type: 'weather-chip', weather: 'hail' });
+    }
+    if (move.name === 'grassy-terrain') {
+      room.terrain = 'grassy';
+      log.push({ type: 'weather-chip', weather: 'grassy-terrain' });
+    }
+    if (move.name === 'electric-terrain') {
+      room.terrain = 'electric';
+      log.push({ type: 'weather-chip', weather: 'electric-terrain' });
+    }
+    if (move.name === 'psychic-terrain') {
+      room.terrain = 'psychic';
+      log.push({ type: 'weather-chip', weather: 'psychic-terrain' });
+    }
+    if (move.name === 'misty-terrain') {
+      room.terrain = 'misty';
+      log.push({ type: 'weather-chip', weather: 'misty-terrain' });
+    }
+    if (move.name === 'defog') {
+      opponentSide.hazards = { spikes: 0, stealthRock: false, toxicSpikes: 0 };
+      side.hazards = { spikes: 0, stealthRock: false, toxicSpikes: 0 };
+      defender.stages.eva = clamp(defender.stages.eva - 1, -6, 6);
+      log.push({ type: 'message', text: 'Hazards were cleared by Defog.' });
+      return;
+    }
+    if (move.name === 'roar' || move.name === 'whirlwind') {
+      forceRandomSwitch(room, sideKey === 'p1' ? 'p2' : 'p1', log);
+      return;
+    }
+    if (move.name === 'parting-shot') {
+      defender.stages.atk = clamp(defender.stages.atk - 1, -6, 6);
+      defender.stages.spa = clamp(defender.stages.spa - 1, -6, 6);
+      log.push({ type: 'status-applied', side: sideKey, target: 'opponent', status: 'drop' });
+      forceRandomSwitch(room, sideKey, log);
+      return;
+    }
+    if (move.name === 'taunt') {
+      defender.volatiles.taunt = 3;
+      log.push({ type: 'status-applied', side: sideKey, target: 'opponent', status: 'taunt' });
+      return;
+    }
+    if (move.name === 'encore') {
+      if (defender.lastMove) {
+        defender.volatiles.encoreMove = defender.lastMove;
+        defender.volatiles.encoreTurns = 3;
+        log.push({ type: 'status-applied', side: sideKey, target: 'opponent', status: 'encore' });
+      }
+      return;
+    }
+    if (['confuse-ray', 'supersonic'].includes(move.name)) {
+      if (!defender.volatiles.confusion) {
+        defender.volatiles.confusion = randInt(1, 4);
+        log.push({ type: 'status-applied', side: sideKey, target: 'opponent', status: 'confusion' });
+      }
+      return;
+    }
+    if (move.name === 'substitute') {
+      const cost = Math.floor(attacker.maxHp * 0.25);
+      if (attacker.hp > cost && attacker.volatiles.substitute === 0) {
+        attacker.hp -= cost;
+        attacker.volatiles.substitute = cost;
+        log.push({ type: 'status-applied', side: sideKey, status: 'substitute' });
+      }
+      return;
+    }
+    if (move.name === 'leech-seed') {
+      if (!defender.volatiles.seeded && !defender.types.includes('grass')) {
+        defender.volatiles.seeded = true;
+        defender.volatiles.seedSource = sideKey;
+        log.push({ type: 'status-applied', side: sideKey, target: 'opponent', status: 'leech-seed' });
+      }
+      return;
+    }
+    if (healMoves.has(move.name)) {
+      const heal = Math.max(1, Math.floor(attacker.maxHp * 0.5));
+      attacker.hp = clamp(attacker.hp + heal, 0, attacker.maxHp);
+      log.push({ type: 'item-heal', side: sideKey, amount: heal });
+      return;
+    }
+    if (move.name === 'rest') {
+      attacker.hp = attacker.maxHp;
+      attacker.status = 'sleep';
+      attacker.statusTurns = 2;
+      log.push({ type: 'status-applied', side: sideKey, status: 'sleep' });
+      return;
+    }
+    const utilityMoves = [
+      'stealth-rock',
+      'spikes',
+      'toxic-spikes',
+      'rain-dance',
+      'sunny-day',
+      'sandstorm',
+      'hail',
+      'grassy-terrain',
+      'electric-terrain',
+      'psychic-terrain',
+      'misty-terrain',
+      'defog'
+    ];
+    if (!utilityMoves.includes(move.name)) {
+      const ailment = mapAilment(move.meta?.ailment?.name);
+      if (ailment) {
+        if (ailment === 'confusion') {
+          if (!defender.volatiles.confusion) {
+            defender.volatiles.confusion = randInt(1, 4);
+            log.push({ type: 'status-applied', side: sideKey, target: 'opponent', status: 'confusion' });
+          }
+        } else if (applyStatus(opponentSide, defender, ailment)) {
+          log.push({ type: 'status-applied', side: sideKey, target: 'opponent', status: ailment });
+        }
+      }
+      if (Array.isArray(move.stat_changes) && move.stat_changes.length) {
+        const targetMon = targetIsUser ? attacker : defender;
+        move.stat_changes.forEach((c) => {
+          const key = c.stat?.name === 'special-attack' ? 'spa'
+            : c.stat?.name === 'special-defense' ? 'spd'
+            : c.stat?.name;
+          if (key && targetMon.stages[key] !== undefined) {
+            targetMon.stages[key] = clamp(targetMon.stages[key] + c.change, -6, 6);
+          }
+        });
+        log.push({ type: 'status-applied', side: sideKey, target: targetIsUser ? 'self' : 'opponent', status: 'stat-change' });
+      }
+      if (move.meta?.healing) {
+        const heal = Math.max(1, Math.floor(attacker.maxHp * (move.meta.healing / 100)));
+        attacker.hp = clamp(attacker.hp + heal, 0, attacker.maxHp);
+        log.push({ type: 'item-heal', side: sideKey, amount: heal });
+      }
+    }
+    return;
+  }
+  const soundMove = move.flags?.includes('sound');
+  if (defender.volatiles?.substitute > 0 && !soundMove) {
+    const subDmg = Math.max(1, Math.floor(calcDamage(attacker, defender, move, room.weather, room.terrain)));
+    defender.volatiles.substitute -= subDmg;
+    log.push({ type: 'damage', side: sideKey, amount: subDmg, effective: getTypeEffect(move.type, defender.types) });
+    if (defender.volatiles.substitute <= 0) {
+      defender.volatiles.substitute = 0;
+      log.push({ type: 'message', text: 'Substitute broke!' });
+    }
+    return;
+  }
+  if (defender.volatiles?.protect) {
+    log.push({ type: 'message', text: `${defender.name} protected itself!` });
+    return;
+  }
+  if (defender.ability === 'flash-fire' && move.type === 'fire') {
+    defender.flashFire = true;
+    log.push({ type: 'message', text: `${defender.name} absorbed the fire!` });
+    return;
+  }
+  if (defender.ability === 'levitate' && move.type === 'ground') {
+    log.push({ type: 'message', text: `${defender.name} is immune!` });
+    return;
+  }
+  const flinchMoves = new Set([
+    'air-slash',
+    'rock-slide',
+    'iron-head',
+    'bite',
+    'headbutt',
+    'zen-headbutt',
+    'dark-pulse',
+    'waterfall',
+    'fake-out',
+    'extrasensory',
+    'rolling-kick',
+    'snore',
+    'stomp',
+    'twister'
+  ]);
+  const pivotMoves = new Set(['u-turn', 'volt-switch', 'flip-turn']);
+  const metaHits = move.meta?.min_hits && move.meta?.max_hits ? randInt(move.meta.min_hits, move.meta.max_hits) : null;
+  const hits = metaHits || 1;
+  let totalDamage = 0;
+  for (let h = 0; h < hits; h += 1) {
+    if (defender.fainted) break;
+    let dmg = calcDamage(attacker, defender, move, room.weather, room.terrain);
+    if (attacker.item === 'life-orb') dmg = Math.floor(dmg * 1.3);
+    applyDamage(defender, dmg, log);
+    log.push({ type: 'damage', side: sideKey, amount: dmg, effective: getTypeEffect(move.type, defender.types) });
+    totalDamage += dmg;
+  }
+  if (flinchMoves.has(move.name) || (move.meta?.flinch_chance || 0) > 0) {
+    const atkSpeed = getSpeed(attacker, side);
+    const defSpeed = getSpeed(defender, opponentSide);
+    const chance = move.meta?.flinch_chance ? move.meta.flinch_chance / 100 : 0.3;
+    if (atkSpeed > defSpeed && Math.random() < chance) {
+      defender.volatiles.flinch = true;
+      log.push({ type: 'status-applied', side: sideKey, target: 'opponent', status: 'flinch' });
+    }
+  }
+  if (move.name === 'knock-off' && defender.item) {
+    defender.item = null;
+    log.push({ type: 'message', text: `${defender.name}'s item was knocked off!` });
+  }
+  if (move.name === 'rapid-spin') {
+    side.hazards = { spikes: 0, stealthRock: false, toxicSpikes: 0 };
+    attacker.stages.spe = clamp(attacker.stages.spe + 1, -6, 6);
+    log.push({ type: 'message', text: 'Hazards were cleared by Rapid Spin.' });
+  }
+  if ((move.meta?.drain || 0) > 0 && totalDamage > 0) {
+    const ratio = move.meta?.drain ? move.meta.drain / 100 : 0.5;
+    const heal = Math.max(1, Math.floor(totalDamage * ratio));
+    attacker.hp = clamp(attacker.hp + heal, 0, attacker.maxHp);
+    log.push({ type: 'item-heal', side: sideKey, amount: heal });
+  }
+  if ((move.meta?.recoil || 0) > 0 && totalDamage > 0) {
+    const ratio = move.meta?.recoil ? move.meta.recoil / 100 : 1 / 3;
+    const recoil = Math.max(1, Math.floor(totalDamage * ratio));
+    applyDamage(attacker, recoil, log);
+    log.push({ type: 'status-tick', side: sideKey, status: 'recoil', amount: recoil });
+  }
+  if (attacker.item === 'life-orb') {
+    const recoil = Math.max(1, Math.floor(attacker.maxHp * 0.1));
+    applyDamage(attacker, recoil, log);
+    log.push({ type: 'status-tick', side: sideKey, status: 'recoil', amount: recoil });
+  }
+  if (defender.fainted) {
+    log.push({ type: 'pokemon-fainted', side: sideKey === 'p1' ? 'p2' : 'p1' });
+  }
+  if (move.meta?.ailment) {
+    const ailment = mapAilment(move.meta.ailment.name);
+    if (ailment && move.meta.ailment_chance && Math.random() * 100 < move.meta.ailment_chance) {
+      if (ailment === 'confusion') {
+        if (!defender.volatiles.confusion) defender.volatiles.confusion = randInt(1, 4);
+      } else {
+        applyStatus(opponentSide, defender, ailment);
+      }
+    }
+  }
+  if (Array.isArray(move.stat_changes) && move.stat_changes.length && move.target?.includes('opponent')) {
+    move.stat_changes.forEach((c) => {
+      const key = c.stat?.name === 'special-attack' ? 'spa'
+        : c.stat?.name === 'special-defense' ? 'spd'
+        : c.stat?.name;
+      if (key && defender.stages[key] !== undefined) {
+        defender.stages[key] = clamp(defender.stages[key] + c.change, -6, 6);
+      }
+    });
+    log.push({ type: 'status-applied', side: sideKey, target: 'opponent', status: 'stat-change' });
+  }
+  if (pivotMoves.has(move.name) && !attacker.fainted) {
+    forceRandomSwitch(room, sideKey, log);
+  }
+  if (attacker.item === 'choice-scarf') {
+    side.choiceLock = move.name;
+  }
+}
+
+function resolveTurn(room) {
+  const log = [];
+  const p1Action = room.actions.p1 || autoMove(room, 'p1');
+  const p2Action = room.actions.p2 || autoMove(room, 'p2');
+
+  const p1Mon = currentActive(room.sides.p1);
+  const p2Mon = currentActive(room.sides.p2);
+  const p1Priority = p1Action.type === 'move' ? (p1Action.move?.priority ?? p1Mon.moves[p1Action.index]?.priority ?? 0) : 0;
+  const p2Priority = p2Action.type === 'move' ? (p2Action.move?.priority ?? p2Mon.moves[p2Action.index]?.priority ?? 0) : 0;
+
+  let order = ['p1', 'p2'];
+  if (p2Priority > p1Priority) order = ['p2', 'p1'];
+  if (p1Priority === p2Priority) {
+    const p1Spe = getSpeed(p1Mon, room.sides.p1);
+    const p2Spe = getSpeed(p2Mon, room.sides.p2);
+    if (p2Spe > p1Spe) order = ['p2', 'p1'];
+  }
+
+  for (const sideKey of order) {
+    const action = sideKey === 'p1' ? p1Action : p2Action;
+    if (action.type === 'switch') {
+      resolveSwitch(room, sideKey, action.index, log);
+    } else {
+      resolveMove(room, sideKey, action, log);
+    }
+  }
+
+  endOfTurn(room, log);
+  if (room.weather === 'sand' || room.weather === 'hail') {
+    for (const key of ['p1', 'p2']) {
+      const side = room.sides[key];
+      const mon = currentActive(side);
+      if (!mon || mon.fainted) continue;
+      const immune = room.weather === 'sand'
+        ? mon.types.includes('rock') || mon.types.includes('ground') || mon.types.includes('steel')
+        : mon.types.includes('ice');
+      if (!immune) {
+        const dmg = Math.max(1, Math.floor(mon.maxHp * 0.0625));
+        applyDamage(mon, dmg, log);
+        log.push({ type: 'status-tick', side: key, status: room.weather, amount: dmg });
+      }
+    }
+  }
+  const p1Mon = currentActive(room.sides.p1);
+  const p2Mon = currentActive(room.sides.p2);
+  if (p1Mon?.volatiles) p1Mon.volatiles.protect = false;
+  if (p2Mon?.volatiles) p2Mon.volatiles.protect = false;
+  room.turn += 1;
+  room.actions = {};
+
+  log.push({ type: 'turn-end', turn: room.turn });
+
+  for (const e of log) enqueue(room, e);
+
+  if (isBattleOver(room)) {
+    room.battleOver = true;
+    room.winner = decideWinner(room);
+  }
+
+  return log;
+}
+
+async function startRandomBattle(genList) {
+  const team1 = await generateRandomTeam(genList);
+  const team2 = await generateRandomTeam(genList);
+  const room = createRoom(genList, 'Player 1', 'Player 2', team1, team2);
+  return room;
+}
+
+async function startBotBattle(genList) {
+  const team1 = await generateRandomTeam(genList);
+  const team2 = await generateRandomTeam(genList);
+  const room = createRoom(genList, 'Player', 'Bot', team1, team2);
+  return room;
+}
+
+async function startCustomBotBattle(genList, team) {
+  const team2 = await generateRandomTeam(genList);
+  const room = createRoom(genList, 'Player', 'Bot', team, team2);
+  return room;
+}
+
+async function startCustomPvp(genList, team) {
+  const team2 = await generateRandomTeam(genList);
+  const room = createRoom(genList, 'Player 1', 'Player 2', team, team2);
+  return room;
+}
+
+async function parseShowdownLite(text) {
+  const chunks = text.split(/\n\s*\n/).map(t => t.trim()).filter(Boolean);
+  const team = [];
+  for (const chunk of chunks) {
+    const [namePart, itemPart, abilityPart, movesPart] = chunk.split('|').map(s => s.trim());
+    const data = await getPokemonByName(namePart);
+    let moves = [];
+    if (movesPart) {
+      const moveNames = movesPart.split(',').map(s => s.trim()).filter(Boolean);
+      for (const mn of moveNames) {
+        try {
+          const m = await getMoveByName(mn);
+          moves.push(normalizeMove(m));
+        } catch (err) {
+          // ignore
+        }
+      }
+    }
+    if (moves.length === 0) moves = await pickRealMoves(data);
+    const mon = buildPokemonFromApi(data, moves);
+    mon.item = itemPart || mon.item;
+    mon.ability = abilityPart || mon.ability;
+    team.push(mon);
+  }
+  return team.slice(0, 6);
+}
+
+function exportShowdownLite(team) {
+  return team.map(p => {
+    const moves = (p.moves || []).map(m => (typeof m === 'string' ? m : m.name)).join(', ');
+    return `${p.name} | ${p.item || ''} | ${p.ability || ''} | ${moves || ''}`.trim();
   }).join('\n\n');
 }
 
-export function checkTeamLegality(team, gens){
-  const gset = new Set(normalizeGens(gens));
-  const [min,max] = [...gset].reduce((acc,g)=>[Math.min(acc[0],GEN_RANGES[g][0]), Math.max(acc[1],GEN_RANGES[g][1])],[99999,0]);
-  const abilities = new Set(['intimidate','levitate','flash-fire','overgrow','blaze','torrent','guts']);
-  const items = new Set(['leftovers','choice-scarf','focus-sash','life-orb', null]);
-  if(!Array.isArray(team) || team.length===0 || team.length>6) return false;
-  for(const s of team){
-    if(!s?.species) return false;
-    if(s.ability && !abilities.has(s.ability)) return false;
-    if(s.item && !items.has(s.item)) return false;
-    if(!Array.isArray(s.moves) || s.moves.length>4) return false;
+async function checkTeamLegality(team, generations) {
+  if (!Array.isArray(team) || team.length === 0 || team.length > 6) return false;
+  const gens = generations && generations.length ? generations : null;
+  for (const mon of team) {
+    if (!mon.name) return false;
+    const data = await getPokemonByName(mon.name);
+    if (gens) {
+      const okGen = gens.some((g) => {
+        const range = GEN_RANGES[g];
+        return range && data.id >= range[0] && data.id <= range[1];
+      });
+      if (!okGen) return false;
+    }
+    const moveNames = data.moves.map(m => m.move.name);
+    if (mon.moves?.length > 4) return false;
+    for (const m of mon.moves || []) {
+      const name = typeof m === 'string' ? m : m.name;
+      if (!name || !moveNames.includes(name)) return false;
+    }
   }
   return true;
 }
+
+async function hydrateTeam(team) {
+  const hydrated = [];
+  for (const mon of team || []) {
+    if (mon?.stats && Array.isArray(mon.moves) && mon.moves[0]?.power !== undefined) {
+      hydrated.push(mon);
+      continue;
+    }
+    const data = await getPokemonByName(mon.name);
+    let moves = [];
+    const moveNames = Array.isArray(mon.moves) ? mon.moves : [];
+    if (moveNames.length) {
+      for (const mn of moveNames) {
+        try {
+          const m = await getMoveByName(mn);
+          moves.push(normalizeMove(m));
+        } catch (err) {
+          // ignore
+        }
+      }
+    }
+    if (moves.length === 0) moves = await pickRealMoves(data);
+    const built = buildPokemonFromApi(data, moves);
+    built.item = mon.item || built.item;
+    built.ability = mon.ability || built.ability;
+    hydrated.push(built);
+  }
+  return hydrated.slice(0, 6);
+}
+
+module.exports = {
+  rooms,
+  replays,
+  startRandomBattle,
+  startBotBattle,
+  startCustomBotBattle,
+  startCustomPvp,
+  lockAction,
+  autoMove,
+  resolveTurn,
+  getRoomSnapshot,
+  finalizeReplay,
+  getReplay,
+  chooseBotAction,
+  parseShowdownLite,
+  exportShowdownLite,
+  checkTeamLegality,
+  hydrateTeam,
+  createRoom
+};
