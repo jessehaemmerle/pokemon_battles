@@ -176,7 +176,7 @@ export default function BattleScreen({
                   <div className="move-name">{m.name}</div>
                   <div className="move-meta">PP {m.currentPP}/{m.pp} | Acc {m.accuracy} | Prio {m.priority}</div>
                   <div className="move-meta">Type {typeIcon(m.type)} {m.type}</div>
-                  {tags.length > 0 && <div className="move-meta">{tags.join(' • ')}</div>}
+                  {tags.length > 0 && <div className="move-meta">{tags.join(' / ')}</div>}
                   <div className={`eff eff-${eff}`}>{eff === 2 ? 'Super' : eff === 0.5 ? 'Resist' : eff === 0 ? 'No effect' : 'Neutral'}</div>
                   {mySide.choiceLock && <div className="lock">Choice lock: {mySide.choiceLock}</div>}
                 </button>

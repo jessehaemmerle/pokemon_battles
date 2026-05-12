@@ -249,6 +249,7 @@ function calcDamage(attacker, defender, move, weather, terrain) {
   const level = attacker.level;
   let atkStat = move.category === 'special' ? attacker.stats.spa : attacker.stats.atk;
   const defStat = move.category === 'special' ? defender.stats.spd : defender.stats.def;
+  if (attacker.ability === 'guts' && attacker.status && move.category === 'physical') atkStat *= 1.5;
   const atkMod = stageMultiplier(attacker.stages[move.category === 'special' ? 'spa' : 'atk']);
   const defMod = stageMultiplier(defender.stages[move.category === 'special' ? 'spd' : 'def']);
   const base = Math.floor((((2 * level) / 5 + 2) * move.power * (atkStat * atkMod) / (defStat * defMod)) / 50) + 2;
@@ -267,7 +268,6 @@ function calcDamage(attacker, defender, move, weather, terrain) {
   if (attacker.ability === 'blaze' && attacker.hp / attacker.maxHp <= 1 / 3 && move.type === 'fire') weatherMod *= 1.5;
   if (attacker.ability === 'torrent' && attacker.hp / attacker.maxHp <= 1 / 3 && move.type === 'water') weatherMod *= 1.5;
   if (attacker.ability === 'flash-fire' && attacker.flashFire && move.type === 'fire') weatherMod *= 1.5;
-  if (attacker.ability === 'guts' && attacker.status && move.category === 'physical') atkStat *= 1.5;
   if (attacker.status === 'burn' && attacker.ability !== 'guts' && move.category === 'physical') weatherMod *= 0.5;
   const crit = Math.random() < 0.0625 ? 1.5 : 1;
   const rand = 0.85 + Math.random() * 0.15;
@@ -960,10 +960,10 @@ function resolveTurn(room) {
       }
     }
   }
-  const p1Mon = currentActive(room.sides.p1);
-  const p2Mon = currentActive(room.sides.p2);
-  if (p1Mon?.volatiles) p1Mon.volatiles.protect = false;
-  if (p2Mon?.volatiles) p2Mon.volatiles.protect = false;
+  const p1ActiveAfterTurn = currentActive(room.sides.p1);
+  const p2ActiveAfterTurn = currentActive(room.sides.p2);
+  if (p1ActiveAfterTurn?.volatiles) p1ActiveAfterTurn.volatiles.protect = false;
+  if (p2ActiveAfterTurn?.volatiles) p2ActiveAfterTurn.volatiles.protect = false;
   room.turn += 1;
   room.actions = {};
 
@@ -999,9 +999,9 @@ async function startCustomBotBattle(genList, team) {
   return room;
 }
 
-async function startCustomPvp(genList, team) {
-  const team2 = await generateRandomTeam(genList);
-  const room = createRoom(genList, 'Player 1', 'Player 2', team, team2);
+async function startCustomPvp(genList, team1, team2) {
+  const opponentTeam = team2 || await generateRandomTeam(genList);
+  const room = createRoom(genList, 'Player 1', 'Player 2', team1, opponentTeam);
   return room;
 }
 

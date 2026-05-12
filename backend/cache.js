@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const CACHE_FILE = path.join(__dirname, '.cache.json');
+const CACHE_FILE = process.env.POKEAPI_CACHE_FILE || path.join(__dirname, '.cache.json');
 const memoryCache = new Map();
 
 function loadFileCache() {
@@ -18,6 +18,7 @@ function loadFileCache() {
 
 function saveFileCache() {
   try {
+    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
     const obj = Object.fromEntries(memoryCache.entries());
     fs.writeFileSync(CACHE_FILE, JSON.stringify(obj), 'utf-8');
   } catch (err) {

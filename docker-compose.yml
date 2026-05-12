@@ -1,0 +1,16 @@
+services:
+  pokemon-battles:
+    build:
+      context: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      TURN_SECONDS: "60"
+      POKEAPI_CACHE_FILE: /data/pokeapi-cache.json
+    volumes:
+      - pokeapi-cache:/data
+    restart: unless-stopped
+
+volumes:
+  pokeapi-cache:

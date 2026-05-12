@@ -33,6 +33,7 @@ body {
   align-items: center;
   gap: 16px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
 .logo {
@@ -48,6 +49,25 @@ body {
   padding: 6px 12px;
   border-radius: 8px;
   cursor: pointer;
+}
+
+.connection-pill {
+  margin-left: auto;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.connection-pill.connected {
+  border-color: rgba(77, 208, 225, 0.8);
+  color: var(--accent2);
+}
+
+.connection-pill.disconnected {
+  border-color: rgba(252, 165, 165, 0.8);
+  color: #fca5a5;
 }
 
 .tabs button.active {
@@ -231,11 +251,7 @@ body {
   font-size: 11px;
 }
 
-.tag::before {
-  content: "•";
-  margin-right: 6px;
-  opacity: 0.6;
-}
+.tag::before { margin-right: 6px; opacity: 0.6; }
 
 .tag.ailment::before { content: "!"; }
 .tag.flinch::before { content: "~"; }
@@ -373,6 +389,40 @@ body {
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+input,
+select,
+button {
+  font: inherit;
+}
+
+input,
+select {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--muted);
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+
+button {
+  border: 1px solid var(--muted);
+  background: rgba(255,255,255,0.04);
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent2);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .modal {
@@ -399,4 +449,7 @@ body {
   .effects-panel { order: 3; }
   .panel-body { font-size: 11px; }
   .tag { font-size: 10px; }
+  .battle .stage { grid-template-columns: 1fr; }
+  .battle-footer { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .connection-pill { margin-left: 0; }
 }

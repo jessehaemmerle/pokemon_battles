@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { getBackendUrl } from '../lib/config.js';
 
-const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+const backendUrl = getBackendUrl();
 
 export default function ReplayViewer() {
   const [replayId, setReplayId] = useState('');
@@ -8,14 +9,20 @@ export default function ReplayViewer() {
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [loadError, setLoadError] = useState('');
 
   const loadReplay = async () => {
     if (!replayId) return;
     const res = await fetch(`${backendUrl}/replays/${replayId}`);
-    if (!res.ok) return;
+    if (!res.ok) {
+      setReplay(null);
+      setLoadError('Replay not found');
+      return;
+    }
     const json = await res.json();
     setReplay(json);
     setIndex(0);
+    setLoadError('');
   };
 
   useEffect(() => {
@@ -95,6 +102,7 @@ export default function ReplayViewer() {
         <input value={replayId} onChange={(e) => setReplayId(e.target.value)} placeholder="Replay ID" />
         <button onClick={loadReplay}>Load</button>
       </div>
+      {loadError && <div className="badge bad">{loadError}</div>}
       {replay && (
         <div className="replay-body">
           <div className="row">

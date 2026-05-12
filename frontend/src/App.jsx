@@ -20,6 +20,7 @@ function AppInner() {
   const [events, setEvents] = useState([]);
   const [battleEnd, setBattleEnd] = useState(null);
   const [timer, setTimer] = useState(60);
+  const [connectionState, setConnectionState] = useState(socket.connected ? 'connected' : 'connecting');
 
   useEffect(() => {
     document.body.dataset.theme = theme;
@@ -40,6 +41,10 @@ function AppInner() {
     const onBattleEnd = (payload) => setBattleEnd(payload);
     const onTimer = (payload) => setTimer(payload.remaining ?? 60);
     const onErrorMessage = (payload) => toast(payload.text || 'Error');
+    const onMessage = (payload) => toast(payload.text || 'Info');
+    const onConnect = () => setConnectionState('connected');
+    const onDisconnect = () => setConnectionState('disconnected');
+    const onConnectError = () => setConnectionState('disconnected');
 
     socket.on('battle-start', onBattleStart);
     socket.on('state-update', onStateUpdate);
@@ -47,6 +52,10 @@ function AppInner() {
     socket.on('battle-end', onBattleEnd);
     socket.on('timer', onTimer);
     socket.on('error-message', onErrorMessage);
+    socket.on('message', onMessage);
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect_error', onConnectError);
 
     return () => {
       socket.off('battle-start', onBattleStart);
@@ -55,6 +64,10 @@ function AppInner() {
       socket.off('battle-end', onBattleEnd);
       socket.off('timer', onTimer);
       socket.off('error-message', onErrorMessage);
+      socket.off('message', onMessage);
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect_error', onConnectError);
     };
   }, [socket, toast]);
 
@@ -70,6 +83,9 @@ function AppInner() {
         <div className="tabs">
           <button className={tab === 'battle' ? 'active' : ''} onClick={() => setTab('battle')}>Kampf</button>
           <button className={tab === 'replay' ? 'active' : ''} onClick={() => setTab('replay')}>Replay</button>
+        </div>
+        <div className={`connection-pill ${connectionState}`}>
+          {connectionState === 'connected' ? 'Online' : connectionState === 'connecting' ? 'Verbindet...' : 'Offline'}
         </div>
         <button className="theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>Theme</button>
       </header>

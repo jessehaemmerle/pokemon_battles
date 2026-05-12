@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { Server } = require('socket.io');
 const {
   rooms,
@@ -21,12 +23,40 @@ const {
   hydrateTeam
 } = require('./battles');
 
+const PORT = Number(process.env.PORT || 3000);
+const TURN_SECONDS = Math.max(5, Number(process.env.TURN_SECONDS || 60));
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || '*';
+const corsOrigin = CLIENT_ORIGIN === '*'
+  ? '*'
+  : CLIENT_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean);
+
+const waiting = [];
+const customWaiting = [];
+const roomSockets = new Map();
+const rematchVotes = new Map();
+
 const app = express();
-app.use(cors());
+app.use(cors({ origin: corsOrigin }));
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/health', (req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    uptime: process.uptime(),
+    rooms: rooms.size,
+    waiting: waiting.length + customWaiting.length
+  });
+});
+
+app.get('/status', (req, res) => {
+  res.json({
+    ok: true,
+    activeRooms: rooms.size,
+    randomQueue: waiting.length,
+    customQueue: customWaiting.length,
+    turnSeconds: TURN_SECONDS
+  });
 });
 
 app.get('/replays/:id', (req, res) => {
@@ -62,26 +92,71 @@ app.post('/teams/legal', async (req, res) => {
   }
 });
 
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+if (fs.existsSync(PUBLIC_DIR)) {
+  app.use(express.static(PUBLIC_DIR));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+  });
+}
 
-const waiting = [];
-const roomSockets = new Map();
-const rematchVotes = new Map();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: corsOrigin } });
+
+function normalizeGenerations(generations) {
+  const picked = Array.isArray(generations)
+    ? generations.map(Number).filter((g) => Number.isInteger(g) && g >= 1 && g <= 9)
+    : [];
+  return picked.length ? [...new Set(picked)] : [1];
+}
+
+function removeQueuedSocket(socket) {
+  for (const queue of [waiting, customWaiting]) {
+    const index = queue.findIndex((entry) => entry.socket.id === socket.id);
+    if (index >= 0) queue.splice(index, 1);
+  }
+}
+
+function takeConnectedOpponent(queue) {
+  while (queue.length) {
+    const opponent = queue.shift();
+    if (opponent.socket.connected) return opponent;
+  }
+  return null;
+}
+
+function getControllableSide(roomId, socketId) {
+  const sockets = roomSockets.get(roomId);
+  if (!sockets) return null;
+  if (sockets.p1 === socketId) return 'p1';
+  if (sockets.p2 === socketId) return 'p2';
+  return null;
+}
+
+function reportStartError(socket, err) {
+  console.error(err);
+  socket.emit('error-message', { text: 'Battle could not be started. Please try again.' });
+}
+
+function clearRoomTimers(room) {
+  if (room.timer) clearTimeout(room.timer);
+  if (room.timerInterval) clearInterval(room.timerInterval);
+  room.timer = null;
+  room.timerInterval = null;
+}
 
 function startTurnTimer(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
-  if (room.timer) clearTimeout(room.timer);
-  if (room.timerInterval) clearInterval(room.timerInterval);
+  clearRoomTimers(room);
+  io.to(roomId).emit('timer', { room: roomId, remaining: TURN_SECONDS });
   room.timer = setTimeout(() => {
     io.to(roomId).emit('timer', { room: roomId, remaining: 0 });
     if (room.battleOver) return;
     if (!room.actions.p1) lockAction(room, 'p1', autoMove(room, 'p1'));
     if (!room.actions.p2) lockAction(room, 'p2', autoMove(room, 'p2'));
     resolveAndBroadcast(roomId);
-  }, 60000);
-  let remaining = 60;
+  }, TURN_SECONDS * 1000);
+  let remaining = TURN_SECONDS;
   const interval = setInterval(() => {
     remaining -= 1;
     io.to(roomId).emit('timer', { room: roomId, remaining });
@@ -93,8 +168,7 @@ function startTurnTimer(roomId) {
 function resolveAndBroadcast(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
-  if (room.timer) clearTimeout(room.timer);
-  if (room.timerInterval) clearInterval(room.timerInterval);
+  clearRoomTimers(room);
   const events = resolveTurn(room);
   const snap = getRoomSnapshot(room);
   io.to(roomId).emit('turn-state', { room: roomId, events });
@@ -129,55 +203,93 @@ function emitBattleStart(roomId, room, sockets) {
 
 io.on('connection', (socket) => {
   socket.on('join-random', async (payload = {}) => {
-    if (waiting.length === 0) {
-      waiting.push({ socket, payload });
+    removeQueuedSocket(socket);
+    const opponent = takeConnectedOpponent(waiting);
+    if (!opponent) {
+      waiting.push({ socket, payload: { generations: normalizeGenerations(payload.generations) } });
       socket.emit('message', { text: 'Waiting for opponent...' });
       return;
     }
-    const opponent = waiting.shift();
-    const genList = payload.generations || opponent.payload.generations || [1];
-    const room = await startRandomBattle(genList);
-    socket.join(room.id);
-    opponent.socket.join(room.id);
-    const sockets = { p1: socket.id, p2: opponent.socket.id };
-    bindRoomSockets(room.id, sockets);
-    emitBattleStart(room.id, room, sockets);
+    try {
+      const genList = normalizeGenerations([...(opponent.payload.generations || []), ...(payload.generations || [])]);
+      const room = await startRandomBattle(genList);
+      socket.join(room.id);
+      opponent.socket.join(room.id);
+      const sockets = { p1: opponent.socket.id, p2: socket.id };
+      bindRoomSockets(room.id, sockets);
+      emitBattleStart(room.id, room, sockets);
+    } catch (err) {
+      reportStartError(socket, err);
+      reportStartError(opponent.socket, err);
+    }
   });
 
   socket.on('start-bot-battle', async (payload = {}) => {
-    const room = await startBotBattle(payload.generations || [1]);
-    socket.join(room.id);
-    const sockets = { p1: socket.id, p2: 'bot' };
-    bindRoomSockets(room.id, sockets);
-    emitBattleStart(room.id, room, sockets);
+    removeQueuedSocket(socket);
+    try {
+      const room = await startBotBattle(normalizeGenerations(payload.generations));
+      socket.join(room.id);
+      const sockets = { p1: socket.id, p2: 'bot' };
+      bindRoomSockets(room.id, sockets);
+      emitBattleStart(room.id, room, sockets);
+    } catch (err) {
+      reportStartError(socket, err);
+    }
   });
 
   socket.on('start-custom-bot', async (payload = {}) => {
-    const ok = await checkTeamLegality(payload.team || [], payload.generations || []);
-    if (!ok) return socket.emit('error-message', { text: 'Team illegal' });
-    const team = await hydrateTeam(payload.team || []);
-    const room = await startCustomBotBattle(payload.generations || [1], team);
-    socket.join(room.id);
-    const sockets = { p1: socket.id, p2: 'bot' };
-    bindRoomSockets(room.id, sockets);
-    emitBattleStart(room.id, room, sockets);
+    removeQueuedSocket(socket);
+    try {
+      const generations = normalizeGenerations(payload.generations);
+      const ok = await checkTeamLegality(payload.team || [], generations);
+      if (!ok) return socket.emit('error-message', { text: 'Team illegal' });
+      const team = await hydrateTeam(payload.team || []);
+      const room = await startCustomBotBattle(generations, team);
+      socket.join(room.id);
+      const sockets = { p1: socket.id, p2: 'bot' };
+      bindRoomSockets(room.id, sockets);
+      emitBattleStart(room.id, room, sockets);
+    } catch (err) {
+      reportStartError(socket, err);
+    }
   });
 
   socket.on('start-custom-pvp', async (payload = {}) => {
-    const ok = await checkTeamLegality(payload.team || [], payload.generations || []);
-    if (!ok) return socket.emit('error-message', { text: 'Team illegal' });
-    const team = await hydrateTeam(payload.team || []);
-    const room = await startCustomPvp(payload.generations || [1], team);
-    socket.join(room.id);
-    const sockets = { p1: socket.id, p2: 'bot' };
-    bindRoomSockets(room.id, sockets);
-    emitBattleStart(room.id, room, sockets);
+    removeQueuedSocket(socket);
+    let opponent = null;
+    try {
+      const generations = normalizeGenerations(payload.generations);
+      const ok = await checkTeamLegality(payload.team || [], generations);
+      if (!ok) return socket.emit('error-message', { text: 'Team illegal' });
+      const team = await hydrateTeam(payload.team || []);
+      opponent = takeConnectedOpponent(customWaiting);
+      if (!opponent) {
+        customWaiting.push({ socket, team, payload: { generations } });
+        socket.emit('message', { text: 'Waiting for a custom-team opponent...' });
+        return;
+      }
+      const genList = normalizeGenerations([...(opponent.payload.generations || []), ...generations]);
+      const room = await startCustomPvp(genList, opponent.team, team);
+      opponent.socket.join(room.id);
+      socket.join(room.id);
+      const sockets = { p1: opponent.socket.id, p2: socket.id };
+      bindRoomSockets(room.id, sockets);
+      emitBattleStart(room.id, room, sockets);
+    } catch (err) {
+      reportStartError(socket, err);
+      if (opponent) reportStartError(opponent.socket, err);
+    }
   });
 
   socket.on('lock-action', (payload = {}) => {
     const room = rooms.get(payload.room);
     if (!room || room.battleOver) return;
-    lockAction(room, payload.side, payload);
+    const allowedSide = getControllableSide(payload.room, socket.id);
+    if (!allowedSide || allowedSide !== payload.side) {
+      socket.emit('error-message', { text: 'You cannot control this side.' });
+      return;
+    }
+    lockAction(room, allowedSide, payload);
     const roomMeta = roomSockets.get(payload.room);
     if (roomMeta?.p2 === 'bot' && !room.actions.p2) {
       lockAction(room, 'p2', chooseBotAction(room, 'p2'));
@@ -196,8 +308,14 @@ io.on('connection', (socket) => {
   socket.on('forfeit', (payload = {}) => {
     const room = rooms.get(payload.room);
     if (!room) return;
+    const allowedSide = getControllableSide(payload.room, socket.id);
+    if (!allowedSide || allowedSide !== payload.side) {
+      socket.emit('error-message', { text: 'You cannot forfeit this side.' });
+      return;
+    }
     room.battleOver = true;
-    room.winner = payload.side === 'p1' ? 'p2' : 'p1';
+    room.winner = allowedSide === 'p1' ? 'p2' : 'p1';
+    clearRoomTimers(room);
     const replayId = finalizeReplay(room);
     io.to(room.id).emit('battle-end', { room: room.id, winner: room.winner, replayId });
   });
@@ -240,9 +358,12 @@ io.on('connection', (socket) => {
     socket.join(room.id);
     socket.emit('state-update', getRoomSnapshot(room));
   });
+
+  socket.on('disconnect', () => {
+    removeQueuedSocket(socket);
+  });
 });
 
-const PORT = 3000;
 server.listen(PORT, () => {
   console.log(`Backend listening on ${PORT}`);
 });

@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { copyToClipboard } from '../lib/clipboard.js';
 import { downloadJson } from '../lib/download.js';
+import { getBackendUrl } from '../lib/config.js';
 import { useToast } from './ToastProvider.jsx';
 
 const API = 'https://pokeapi.co/api/v2';
-const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+const backendUrl = getBackendUrl();
 
 export default function TeamBuilder({ onStartBot, onStartPvp }) {
   const toast = useToast();
@@ -18,6 +19,7 @@ export default function TeamBuilder({ onStartBot, onStartPvp }) {
   const cachedFetch = async (url) => {
     if (cacheRef.current.has(url)) return cacheRef.current.get(url);
     const res = await fetch(url);
+    if (!res.ok) throw new Error(`Request failed: ${res.status}`);
     const json = await res.json();
     cacheRef.current.set(url, json);
     return json;
@@ -75,35 +77,46 @@ export default function TeamBuilder({ onStartBot, onStartPvp }) {
   };
 
   const exportTeam = async () => {
-    const res = await fetch(`${backendUrl}/teams/export`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ team })
-    });
-    const json = await res.json();
-    await copyToClipboard(json.text || '');
-    toast('Copied to clipboard');
+    try {
+      const res = await fetch(`${backendUrl}/teams/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ team })
+      });
+      if (!res.ok) throw new Error('Export failed');
+      const json = await res.json();
+      await copyToClipboard(json.text || '');
+      toast('Copied to clipboard');
+    } catch (err) {
+      toast('Export failed', 'error');
+    }
   };
 
   const importTeam = async () => {
     const text = prompt('Paste Showdown-Lite text');
     if (!text) return;
-    const res = await fetch(`${backendUrl}/teams/parse`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-    const json = await res.json();
-    const imported = [];
-    for (const mon of json.team || []) {
-      try {
-        const data = await cachedFetch(`${API}/pokemon/${mon.name}`);
-        imported.push(buildEntry(data, toMoveNames(mon.moves)));
-      } catch (err) {
-        // ignore
+    try {
+      const res = await fetch(`${backendUrl}/teams/parse`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      if (!res.ok) throw new Error('Import failed');
+      const json = await res.json();
+      const imported = [];
+      for (const mon of json.team || []) {
+        try {
+          const data = await cachedFetch(`${API}/pokemon/${mon.name}`);
+          imported.push(buildEntry(data, toMoveNames(mon.moves)));
+        } catch (err) {
+          // ignore invalid entries in pasted teams
+        }
       }
+      setTeam(imported);
+      toast(`Imported ${imported.length} Pokemon`);
+    } catch (err) {
+      toast('Import failed', 'error');
     }
-    setTeam(imported);
   };
 
   useEffect(() => {
@@ -132,11 +145,16 @@ export default function TeamBuilder({ onStartBot, onStartPvp }) {
   const loadLocal = () => {
     const raw = localStorage.getItem('pb_team');
     if (!raw) return;
-    const parsed = JSON.parse(raw);
-    setTeam(parsed.map((p) => ({
-      ...p,
-      moves: toMoveNames(p.moves)
-    })));
+    try {
+      const parsed = JSON.parse(raw);
+      setTeam(parsed.map((p) => ({
+        ...p,
+        moves: toMoveNames(p.moves)
+      })));
+      toast('Loaded');
+    } catch (err) {
+      toast('Saved team is invalid', 'error');
+    }
   };
 
   return (
@@ -169,8 +187,8 @@ export default function TeamBuilder({ onStartBot, onStartPvp }) {
       </div>
 
       <div className="row">
-        <button onClick={() => onStartBot(team, [1, 2, 3, 4, 5, 6, 7, 8, 9])}>Start custom vs Bot</button>
-        <button onClick={() => onStartPvp(team, [1, 2, 3, 4, 5, 6, 7, 8, 9])}>Start custom Online</button>
+        <button disabled={!legal} onClick={() => onStartBot(team, [1, 2, 3, 4, 5, 6, 7, 8, 9])}>Start custom vs Bot</button>
+        <button disabled={!legal} onClick={() => onStartPvp(team, [1, 2, 3, 4, 5, 6, 7, 8, 9])}>Start custom Online</button>
       </div>
 
       {modal.open && (
