@@ -1,4 +1,4 @@
-const TYPE_CHART = {
+export const TYPE_CHART = {
   normal: { rock: 0.5, ghost: 0, steel: 0.5 },
   fire: { fire: 0.5, water: 0.5, grass: 2, ice: 2, bug: 2, rock: 0.5, dragon: 0.5, steel: 2 },
   water: { fire: 2, water: 0.5, grass: 0.5, ground: 2, rock: 2, dragon: 0.5 },
@@ -19,7 +19,7 @@ const TYPE_CHART = {
   fairy: { fighting: 2, dragon: 2, dark: 2, fire: 0.5, poison: 0.5, steel: 0.5 }
 };
 
-function typeEffectiveness(moveType, targetType) {
+export function typeEffectiveness(moveType, targetType) {
   if (!moveType || !targetType) return 1;
   const atk = TYPE_CHART[moveType.toLowerCase()] || {};
   if (Array.isArray(targetType)) {
@@ -28,4 +28,4 @@ function typeEffectiveness(moveType, targetType) {
   return atk[targetType.toLowerCase()] ?? 1;
 }
 
-module.exports = { TYPE_CHART, typeEffectiveness };
+export default { TYPE_CHART, typeEffectiveness };

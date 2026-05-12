@@ -1,7 +1,5 @@
 import React, { useMemo } from 'react';
-import typeChart from '../shared/typeChart.js';
-
-const { typeEffectiveness } = typeChart;
+import { typeEffectiveness } from '../shared/typeChart.js';
 
 export default function BattleScreen({
   room,
